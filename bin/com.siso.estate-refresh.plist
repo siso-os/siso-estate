@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.siso.estate-refresh</string>
+  <key>ProgramArguments</key><array><string>/bin/bash</string><string>-lc</string><string>cd ~/SISO_Workspace/SISO_Agents/siso-estate &amp;&amp; python3 tools/refresh.py --light &amp;&amp; python3 tools/umbrella.py snapshot --push --machine laptop</string></array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/tmp/com.siso.estate-refresh.out</string>
+  <key>StandardErrorPath</key><string>/tmp/com.siso.estate-refresh.err</string>
+</dict></plist>

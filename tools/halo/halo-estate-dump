@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# HALO's six databases, dumped nightly into a root-only outbox for the estate (HALO-ESTATE, 27 Sep 2026), then the
+# non-database planes (streaming-state, box-config) packed and encrypted by halo-plane-pack into $OUT/planes (HALO-BOX).
+# Source: siso-estate tools/halo/halo-estate-dump -> /usr/local/sbin/halo-estate-dump on halo-vps.
+# oracle-offbox-backup ships /srv/halo-outbox to siso-vps (write-only rrsync); siso-vps encrypts it into
+# HALO-AGENCY/siso-data-halo-databases. HALO never holds a GitHub credential or the age identity.
+# Reads through the cluster's local socket (pg_hba: local trust); touches no service, no env file.
+set -Eeuo pipefail
+umask 077
+OUT=/srv/halo-outbox
+KEEP=3                                   # runs kept here; siso-vps keeps the long retention
+PGHOME=/home/shaan/.local/opt/postgresql-16
+export LD_LIBRARY_PATH=$PGHOME/usr/lib/x86_64-linux-gnu
+BIN=$PGHOME/usr/lib/postgresql/16/bin
+SOCK=/home/shaan/.local/state/halo-native
+DBS=(halo_live halo_oracle_convex twenty halo_affine plane buzz)
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+install -d -m 700 "$OUT"
+tmp="$OUT/.tmp-$stamp"; mkdir -m 700 "$tmp"
+trap 'rm -rf "$tmp"' ERR
+for db in "${DBS[@]}"; do
+  nice -n 19 ionice -c3 "$BIN/pg_dump" -h "$SOCK" -p 55432 -U halo -Fc -Z 6 -f "$tmp/$db.dump" "$db"
+  "$BIN/pg_restore" --list "$tmp/$db.dump" >/dev/null     # a dump that cannot be listed is not a backup
+done
+(cd "$tmp" && sha256sum *.dump > SHA256SUMS)
+python3 - "$tmp" "$stamp" "${DBS[@]}" <<'PY'
+import json, os, sys
+d, stamp, dbs = sys.argv[1], sys.argv[2], sys.argv[3:]
+json.dump({"host": "halo-vps", "at": stamp, "format": "pg_dump -Fc", "databases":
+           [{"name": x, "bytes": os.path.getsize(f"{d}/{x}.dump")} for x in dbs]}, open(f"{d}/manifest.json", "w"), indent=1)
+PY
+mv "$tmp" "$OUT/$stamp"
+# retention: only this script's own run folders
+ls -1d "$OUT"/20*Z 2>/dev/null | sort | head -n -$KEEP | xargs -r rm -rf
+echo "halo-estate-dump ok: $stamp ${#DBS[@]} databases $(du -sh "$OUT/$stamp" | cut -f1)"
+# the planes: encrypted to HALO's public key on the box; a plane whose content hash is unchanged writes nothing
+/usr/local/sbin/halo-plane-pack streaming-state box-config

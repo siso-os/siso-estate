@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+/tmp/
+.claude/session-context/
+.claude/settings.local.json
+.claude/boot-prompt.txt

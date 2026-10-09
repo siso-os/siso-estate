@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Pack HALO's non-database state into the estate outbox, one encrypted plane per app (HALO-BOX, 27 Sep 2026).
+
+  halo-plane-pack streaming-state box-config     nightly, from halo-estate-dump
+  halo-plane-pack old-crm                         one-off: the Docker CRM's last copy before it is removed
+
+Each plane is staged (SQLite files through the backup API, so a live database is captured consistently; browser
+caches skipped), hashed file by file into FILES.sha256, and compared with the plane's last run: unchanged content
+writes nothing. A changed plane becomes /srv/halo-outbox/planes/<plane>/<stamp>/ holding <plane>.tar.zst.age
+(tar | zstd | age to HALO's public key in /etc/halo-backup/age-recipient.txt), SHA256SUMS of the ciphertext and
+manifest.json (counts only, no paths). The box can lock but never open: the identity is off the box.
+oracle-offbox-backup ships planes/ to siso-vps; halo-backup-ingest keeps 7 daily + 4 weekly and pushes each plane to
+HALO-AGENCY/halo-data-<plane>. Source: siso-estate tools/halo/halo-plane-pack -> /usr/local/sbin on halo-vps.
+"""
+import glob, hashlib, json, os, re, shutil, sqlite3, subprocess, sys, time
+
+OUT = "/srv/halo-outbox/planes"
+RECIPIENT = "/etc/halo-backup/age-recipient.txt"
+KEEP = 3                                    # runs kept here per plane; siso-vps keeps the long retention
+HOME = "/home/shaan"
+APP = "/srv/oracle/sessions/app-userdata"
+# Chromium caches: rebuilt on first load, 1.9 GB of the 1.9 GB Partitions; the logins are cookies and storage
+BROWSER_CACHES = {"Cache", "Code Cache", "GPUCache", "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache",
+                  "ShaderCache", "CacheStorage", "ScriptCache", "VideoDecodeStats", "Shared Dictionary", "Crashpad"}
+SQLITE_SIDE = ("-journal", "-wal", "-shm")
+
+
+def unit_env_files():
+    """Every EnvironmentFile= named by an oracle-* or halo-* unit or drop-in (system and user)."""
+    units = glob.glob("/etc/systemd/system/oracle-*") + glob.glob("/etc/systemd/system/halo-*") \
+        + glob.glob(f"{HOME}/.config/systemd/user/*")
+    files = []
+    for u in units:
+        for f in ([u] if os.path.isfile(u) else glob.glob(os.path.join(u, "*.conf"))):
+            for line in open(f, errors="replace"):
+                m = re.match(r"\s*EnvironmentFile=-?(\S+)", line)
+                if m:
+                    files.append(m.group(1).replace("%h", HOME))
+    return sorted(set(files))
+
+
+PLANES = {
+    "streaming-state": {"paths": ["/var/lib/headscale", "/etc/headscale", f"{APP}/Partitions",
+                                  f"{APP}/control-plane-outbox", f"{APP}/credentials",
+                                  "/srv/oracle/sessions/login-jar", "/etc/oracle"],
+                        "skip_dirs": BROWSER_CACHES},
+    "box-config": {"paths": lambda: ["/etc/caddy", *glob.glob("/etc/systemd/system/oracle-*"),
+                                     *glob.glob("/etc/systemd/system/halo-*"), f"{HOME}/.config/systemd/user",
+                                     "/etc/oracle-streaming", *unit_env_files(),
+                                     "/opt/halo-crm/infra/self-hosted", "/opt/halo-crm/app/infra/self-hosted/docker-compose.yml",
+                                     "/opt/ciadpi/dist/docker/compose.yaml",
+                                     "/srv/oracle/oracle-vps-shell/deploy/ome/docker-compose.yml",
+                                     f"{HOME}/halo/archive/2026-09-27-tidy.tar.zst",
+                                     f"{HOME}/halo/app/compose.prod.yaml", f"{HOME}/halo/app/compose.dev.yaml",
+                                     *glob.glob(f"{HOME}/halo/buzz/source/deploy/compose/*.yml"),
+                                     f"{HOME}/halo/tunnel-run.sh", f"{HOME}/.cloudflared", f"{HOME}/.config/halo"]},
+    "old-crm": {"paths": ["/var/lib/docker/volumes/halo-crm_convex_data/_data"], "pg_container": "halo-crm-postgres-1"},
+}
+
+
+def is_sqlite(p):
+    try:
+        with open(p, "rb") as f:
+            return f.read(16) == b"SQLite format 3\x00"
+    except OSError:
+        return False
+
+
+def _try_backup(s, dst):
+    try:
+        d = sqlite3.connect(dst)
+        s.backup(d)
+        d.close()
+        return True
+    except sqlite3.Error:
+        if os.path.exists(dst):
+            os.remove(dst)
+        return False
+    finally:
+        s.close()
+
+
+def copy_one(src, dst):
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.islink(src):
+        os.symlink(os.readlink(src), dst)
+    elif is_sqlite(src):
+        # read-only, so root never creates a -shm/-wal the owning service then cannot open; if the live file cannot
+        # be opened read-only, copy it with its journal/WAL and fold that copy instead
+        try:
+            s = sqlite3.connect(f"file:{src}?mode=ro", uri=True, timeout=30)
+        except sqlite3.Error:
+            s = None
+        if s is None or not _try_backup(s, dst):
+            side = dst + ".src"
+            shutil.copy2(src, side)
+            for x in SQLITE_SIDE[:2]:
+                if os.path.exists(src + x):
+                    shutil.copy2(src + x, side + x)
+            s = sqlite3.connect(side)
+            ok = _try_backup(s, dst)
+            for x in ("", *SQLITE_SIDE):
+                if os.path.exists(side + x):
+                    os.remove(side + x)
+            if not ok:
+                shutil.copy2(src, dst)
+        shutil.copystat(src, dst)
+    else:
+        shutil.copy2(src, dst)
+
+
+def stage_path(src, root, skip_dirs):
+    n = 0
+    if not os.path.lexists(src):
+        return 0
+    if not os.path.isdir(src) or os.path.islink(src):
+        copy_one(src, root + src)
+        return 1
+    for dp, dns, fns in os.walk(src):
+        dns[:] = [d for d in dns if d not in skip_dirs]
+        for f in fns:
+            p = os.path.join(dp, f)
+            if f.endswith(SQLITE_SIDE) and os.path.exists(p.rsplit("-", 1)[0]):
+                continue                     # the backup API already folded the journal/WAL into the copy
+            if not (os.path.isfile(p) or os.path.islink(p)):
+                continue                     # sockets, fifos (login.sock, SingletonSocket)
+            try:
+                copy_one(p, root + p)
+                n += 1
+            except (OSError, sqlite3.Error) as e:
+                print(f"  skip {os.path.basename(p)}: {type(e).__name__}", file=sys.stderr)
+    return n
+
+
+def pg_dump(container, root):
+    user = subprocess.check_output(["docker", "exec", container, "printenv", "POSTGRES_USER"], text=True).strip()
+    dbs = subprocess.check_output(["docker", "exec", container, "psql", "-U", user, "-d", "postgres", "-Atc",
+                                   "select datname from pg_database where not datistemplate and datname<>'postgres'"],
+                                  text=True).split()
+    os.makedirs(f"{root}/pg_dump", mode=0o700)
+    for db in dbs:
+        with open(f"{root}/pg_dump/{db}.dump", "wb") as f:
+            subprocess.run(["docker", "exec", container, "pg_dump", "-U", user, "-Fc", db], stdout=f, check=True)
+        subprocess.run(["docker", "exec", "-i", container, "pg_restore", "--list"], stdin=open(f"{root}/pg_dump/{db}.dump", "rb"),
+                       stdout=subprocess.DEVNULL, check=True)   # a dump that cannot be listed is not a backup
+    return len(dbs)
+
+
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def pack(name):
+    spec = PLANES[name]
+    pdir = os.path.join(OUT, name)
+    os.makedirs(pdir, mode=0o700, exist_ok=True)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    tmp = os.path.join(pdir, f".tmp-{stamp}")
+    root = os.path.join(tmp, "stage")
+    os.makedirs(root, mode=0o700)
+    try:
+        paths = spec["paths"]() if callable(spec["paths"]) else spec["paths"]
+        files = sum(stage_path(p, root, spec.get("skip_dirs", set())) for p in paths)
+        if spec.get("pg_container"):
+            files += pg_dump(spec["pg_container"], root)
+        lines, total = [], 0
+        for dp, _, fns in os.walk(root):
+            for f in fns:
+                p = os.path.join(dp, f)
+                if os.path.isfile(p) and not os.path.islink(p):
+                    lines.append(f"{sha(p)}  {os.path.relpath(p, root)}")
+                    total += os.path.getsize(p)
+        listing = "\n".join(sorted(lines, key=lambda l: l[66:])) + "\n"
+        content = hashlib.sha256(listing.encode()).hexdigest()
+        last = os.path.join(pdir, "LAST")
+        if os.path.exists(last) and open(last).read().strip() == content:
+            print(json.dumps({"plane": name, "status": "unchanged", "content_sha256": content}))
+            return
+        open(os.path.join(root, "FILES.sha256"), "w").write(listing)
+        run = os.path.join(tmp, "run")
+        os.makedirs(run)
+        blob = os.path.join(run, f"{name}.tar.zst.age")
+        subprocess.run(["bash", "-o", "pipefail", "-c",
+                        f"tar -C '{root}' -cf - . | zstd -q -T0 -6 | age -R '{RECIPIENT}' > '{blob}'"], check=True)
+        open(os.path.join(run, "SHA256SUMS"), "w").write(f"{sha(blob)}  {os.path.basename(blob)}\n")
+        enc = os.path.getsize(blob)
+        json.dump({"host": "halo-vps", "plane": name, "at": stamp, "files": len(lines), "bytes": total,
+                   "encrypted_bytes": enc, "content_sha256": content,
+                   "recipient": open(RECIPIENT).read().split()[0]}, open(os.path.join(run, "manifest.json"), "w"), indent=1)
+        os.rename(run, os.path.join(pdir, stamp))
+        open(last, "w").write(content + "\n")
+        for old in sorted(glob.glob(os.path.join(pdir, "20*Z")))[:-KEEP]:
+            shutil.rmtree(old)
+        print(json.dumps({"plane": name, "status": "packed", "run": stamp, "files": len(lines), "bytes": total,
+                          "encrypted_bytes": enc}))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    os.umask(0o077)
+    bad = [a for a in sys.argv[1:] if a not in PLANES]
+    if bad or len(sys.argv) < 2:
+        sys.exit(f"usage: halo-plane-pack {{{','.join(PLANES)}}}...")
+    for a in sys.argv[1:]:
+        pack(a)

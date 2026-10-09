@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""siso-vps: prove each HALO plane restores from GitHub (HALO-BOX, 27 Sep 2026).
+
+  halo-plane-proof streaming-state box-config old-crm
+
+For each plane: `data-backup.py restore halo-<plane>` into a scratch dir (git clone, zstd -d, tar -x), then for every
+run: SHA256SUMS of the ciphertext, `age -d` with HALO's identity (~/.config/siso/age/halo-backup.key), zstd -d, tar -x,
+`sha256sum -c FILES.sha256` over every file, and the listing's hash against manifest.json's content_sha256. The scratch
+dir is removed. Writes machines/vps-siso/halo-planes-restore-proof.json (counts only, no paths); exit 1 on any failure.
+"""
+import hashlib, json, os, shutil, subprocess, sys, tempfile, time
+
+EST = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+KEY = os.path.expanduser("~/.config/siso/age/halo-backup.key")
+
+
+def sh(cmd, **kw):
+    return subprocess.run(["bash", "-o", "pipefail", "-c", cmd], capture_output=True, text=True, **kw)
+
+
+def prove(plane):
+    tmp = tempfile.mkdtemp(prefix=f"halo-proof-{plane}-", dir="/srv")
+    try:
+        r = subprocess.run([sys.executable, os.path.join(EST, "tools", "data-backup.py"), "restore", f"halo-{plane}",
+                            f"{tmp}/outer"], capture_output=True, text=True)
+        if r.returncode:
+            return {"ok": False, "error": "restore: " + r.stderr[-200:]}
+        base = next((dp for dp, dns, _ in os.walk(f"{tmp}/outer") if dp.endswith(f"planes/{plane}")), None)
+        runs = sorted(d for d in os.listdir(base)) if base else []
+        out = {"runs": {}}
+        for run in runs:
+            rd, inner = os.path.join(base, run), f"{tmp}/inner/{run}"
+            os.makedirs(inner)
+            ck = sh(f"cd '{rd}' && sha256sum -c --quiet SHA256SUMS")
+            blob = f"{rd}/{plane}.tar.zst.age"
+            dec = sh(f"age -d -i '{KEY}' '{blob}' | zstd -d | tar -xf - -C '{inner}'")
+            files = sh(f"cd '{inner}' && sha256sum -c FILES.sha256")
+            ok_lines = sum(1 for l in files.stdout.splitlines() if l.endswith(": OK"))
+            listing = open(f"{inner}/FILES.sha256").read() if os.path.exists(f"{inner}/FILES.sha256") else ""
+            man = json.load(open(f"{rd}/manifest.json"))
+            res = {"ciphertext_sums": ck.returncode == 0, "decrypt_exit": dec.returncode, "files_ok": ok_lines,
+                   "files_listed": len(listing.splitlines()), "manifest_files": man["files"],
+                   "content_sha256_match": hashlib.sha256(listing.encode()).hexdigest() == man["content_sha256"],
+                   "encrypted_bytes": man["encrypted_bytes"], "bytes": man["bytes"]}
+            res["ok"] = (res["ciphertext_sums"] and not dec.returncode and files.returncode == 0
+                         and ok_lines == res["files_listed"] == man["files"] and res["content_sha256_match"])
+            out["runs"][run] = res
+        out["ok"] = bool(runs) and all(v["ok"] for v in out["runs"].values())
+        return out
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main():
+    path = os.path.join(EST, "machines", "vps-siso", "halo-planes-restore-proof.json")
+    rep = json.load(open(path)) if os.path.exists(path) else {}
+    rep.update({"what": "Restore proof for HALO's encrypted planes (HALO-AGENCY/halo-data-<plane>), HALO-BOX brief "
+                        "2026-09-27-halo-box-protect-slim", "where": "siso-vps, scratch dir under /srv removed after",
+                "how": __doc__.split("\n\n")[1].replace("\n", " ")})
+    rep.setdefault("planes", {})
+    bad = False
+    for plane in sys.argv[1:]:
+        res = prove(plane)
+        res["at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        rep["planes"][plane] = res
+        bad |= not res["ok"]
+        print(json.dumps({plane: res}))
+    json.dump(rep, open(path, "w"), indent=1)
+    sys.exit(1 if bad else 0)
+
+
+if __name__ == "__main__":
+    main()

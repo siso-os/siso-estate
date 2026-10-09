@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# estate-lock CMD...: run CMD while holding the estate's one lock (vault pushes, git commits in siso-estate),
+# so parallel agents do not race on the vault repo or the index. Stale after 10 minutes.
+L=/tmp/estate-lock.d
+for _ in $(seq 1 400); do
+  mkdir "$L" 2>/dev/null && break
+  [ -n "$(find "$L" -maxdepth 0 -mmin +10 2>/dev/null)" ] && rmdir "$L" 2>/dev/null
+  sleep 3
+done
+trap 'rmdir "$L" 2>/dev/null' EXIT
+"$@"

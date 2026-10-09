@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Copy HALO's backups off the box to siso-vps (a write-only, no-delete rrsync target; built by STREAMING as job 12 on
+# 26 Sep, owned by the estate (HALO-ESTATE) from 27 Sep). Source: siso-estate tools/halo/oracle-offbox-backup.
+#   convex/           every Convex backup zip with its .sha256 (oracle-convex-backup)
+#   donor-databases/  Cam's donor dumps (Twenty, AFFiNE, Plane, Buzz; halo-donor-backup, unchanged)
+#   databases/        all six databases (halo-estate-dump)
+#   planes/           the encrypted non-database planes (halo-plane-pack: streaming-state, box-config, old-crm)
+# Existing remote files are never overwritten or deleted. siso-vps ingests them (halo-backup-ingest), keeps the
+# retention set and encrypts it into HALO-AGENCY/siso-data-halo-databases.
+set -Eeuo pipefail
+rsync -a --ignore-existing /srv/oracle/backups/convex/ halo-offbox:convex/
+rsync -a --ignore-existing /home/shaan/halo/backups/donor-databases/ halo-offbox:donor-databases/
+rsync -a --ignore-existing --exclude '.tmp-*' --exclude '/planes/' /srv/halo-outbox/ halo-offbox:databases/
+if [ -d /srv/halo-outbox/planes ]; then
+  rsync -a --ignore-existing --exclude '.tmp-*' --exclude 'LAST' /srv/halo-outbox/planes/ halo-offbox:planes/
+fi
+echo "offbox backup ok: convex=$(ls /srv/oracle/backups/convex | wc -l) donor=$(find /home/shaan/halo/backups/donor-databases -type f | wc -l) databases=$(ls -d /srv/halo-outbox/20*Z 2>/dev/null | wc -l) planes=$(ls -d /srv/halo-outbox/planes/*/20*Z 2>/dev/null | wc -l) runs considered"

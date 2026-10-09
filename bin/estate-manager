@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Spin up the SISO Estate Manager: a Claude session in its house (this repo) that boots from its records.
+#   estate-manager [--print] [extra instructions...]
+#     opens its OWN herdr tab labelled ESTATE (never a split of someone else's tab) and runs claude in that tab's
+#     pane; prints the command instead when herdr is not here or with --print. Extra instructions are appended to the
+#     boot prompt (e.g. a handover note). ESTATE_MODEL (default opus) picks the model.
+set -eu
+HOUSE="$HOME/SISO_Workspace/SISO_Agents/siso-estate"
+MODEL="${ESTATE_MODEL:-opus}"
+PRINT=0; [ "${1:-}" = "--print" ] && { PRINT=1; shift; }
+BOOT="You are the SISO Estate Manager. Load the estate-boot skill and follow it: run estate brief, read the last State in .agents/HANDOFF.md and the ADRs in docs/adr, then take the next open job in .agents/EXECUTION-QUEUE.md. Other agents are working: check herdr agent list before touching any folder. ${*:-}"
+# the prompt goes in a file: a terminal line holds ~1 KB, and a longer typed command is cut off
+PROMPT="$HOUSE/.claude/boot-prompt.txt"
+mkdir -p "$HOUSE/.claude" && printf '%s\n' "$BOOT" > "$PROMPT"
+# ESTATE_ACCOUNT=plain runs plain `claude` (~/.claude, Fahmy's basket); herdr panes inherit herdr's CLAUDE_CONFIG_DIR otherwise
+PRE=""; [ "${ESTATE_ACCOUNT:-}" = plain ] && PRE="env -u CLAUDE_CONFIG_DIR "
+CMD="${PRE}claude --model $MODEL \"\$(cat .claude/boot-prompt.txt)\""
+if [ "$PRINT" = 0 ] && command -v herdr >/dev/null 2>&1 && herdr tab list >/dev/null 2>&1; then
+  tab=$(herdr tab list | python3 -c 'import sys,json; print(next((t["tab_id"] for t in json.load(sys.stdin)["result"]["tabs"] if t.get("label")=="ESTATE"), ""))')
+  if [ -n "$tab" ]; then  # reuse the ESTATE tab if nothing runs in it; never start a second manager
+    busy=$(herdr pane list | python3 -c "import sys,json; print(any(p.get('agent') for p in json.load(sys.stdin)['result']['panes'] if p.get('tab_id')=='$tab'))")
+    [ "$busy" = "True" ] && { echo "the Estate Manager is already running in tab $tab"; exit 0; }
+  else
+    tab=$(herdr tab create --cwd "$HOUSE" --label ESTATE --focus | python3 -c 'import sys,json; r=json.load(sys.stdin)["result"]; print((r.get("tab") or r).get("tab_id"))')
+  fi
+  pane=$(herdr pane list | python3 -c "import sys,json; print([p['pane_id'] for p in json.load(sys.stdin)['result']['panes'] if p.get('tab_id')=='$tab'][0])")
+  herdr pane rename "$pane" ESTATE >/dev/null
+  herdr pane run "$pane" "$CMD" >/dev/null
+  # pane rename only labels the tab; herdr agent names must be lowercase; herdr-send estate needs the agent itself named, once claude is up in the pane
+  for _ in $(seq 1 30); do herdr agent rename "$pane" estate >/dev/null 2>&1 && break; sleep 1; done
+  echo "ESTATE started in its own tab $tab (pane $pane)"
+  exit 0
+fi
+printf 'cd %q && %s\n' "$HOUSE" "$CMD"

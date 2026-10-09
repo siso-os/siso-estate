@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Nightly estate run on any machine on the map (laptop: launchd com.siso.estate-nightly; Linux: root's crontab).
+# Re-inventory, back up disk-only work to private GitHub (secret-scanned), rebuild the ONE estate map
+# (sisodias/siso-city) from every machine's records and push it, count the city (census.json); Sundays the laptop also runs the encrypted data planes.
+set -u
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:$PATH"
+M=${ESTATE_MACHINE:-laptop}
+WS=$HOME/SISO_Workspace
+E=$WS/SISO_Agents/siso-estate
+cd "$E" || exit 1
+mkdir -p "machines/$M"
+# pull before the log opens: nightly.log is tracked, so a pull that rewrites it sent the rest of the night's output
+# into the replaced (deleted) file; from 28 Sep to 1 Oct the log held only "nightly start" lines
+PULL=$(git pull -q --rebase --autostash 2>&1) || PULL="$PULL
+estate pull failed"
+exec >> "$E/machines/$M/nightly.log" 2>&1
+echo "=== $(date '+%F %T') nightly start ($M)"
+[ -n "$PULL" ] && echo "$PULL"
+python3 tools/inventory.py --machine "$M" ${ESTATE_ROOTS:+--roots $ESTATE_ROOTS}
+python3 tools/backup.py plan --machine "$M"
+python3 tools/backup.py run --machine "$M" --jobs 4 --create-repos
+# a checkout held by the secret scan is backed up age-encrypted (held_copy); one with no good copy is loud: console card
+# + A0 inbox line every night until fixed (A0, 3 Oct: Oracle core's work sat only on the laptop, seen by nobody)
+python3 tools/backup.py alert --machine "$M" || echo "backup: a held repo is NOT backed up (python3 tools/backup.py alert)"
+# fast-forward only: other agents' uncommitted memory edits sit in the map's tree, and a rebase pull refuses to run over them
+(cd "$WS" && git fetch -q origin && git merge -q --ff-only origin/main) || echo "map pull: not a fast-forward (the snapshot below rebases on push)"
+python3 tools/dots.py --machine "$M" || echo "dots failed"
+python3 tools/doors.py --commit || echo "doors failed"
+python3 tools/laptop-map.py --machine "$M" || echo "laptop map failed"
+python3 tools/umbrella.py build --machine "$M"
+python3 tools/umbrella.py snapshot --push --machine "$M"
+python3 tools/umbrella.py verify --machine "$M" || echo "map: a pinned commit is not on GitHub (machines/$M/map-verify.json)"   # A16
+python3 tools/census.py --machine "$M" || echo "census failed"
+python3 tools/code.py --machine "$M" && python3 tools/fix.py --run --machine "$M" || echo "building code or fixes failed"
+python3 tools/code.py --machine "$M" >/dev/null || echo "building code rescore failed"
+python3 tools/births.py --machine "$M" || echo "births failed"
+python3 tools/guard.py --machine "$M" || echo "births guard failed"   # report-only: repos born in 30 days without `estate new` (P1)
+# the register and every list generated from it (ADR 0018): a generator nothing runs is a stale document waiting to happen
+python3 tools/projects.py --machine "$M" >/dev/null || echo "projects failed"
+if [ "$M" = laptop ]; then
+  python3 tools/register.py >/dev/null || echo "register failed"
+  python3 tools/render.py >/dev/null || echo "render failed"
+  python3 tools/docs_check.py --machine "$M" >/dev/null || echo "docs check failed"
+  python3 tools/door_top.py --check --machine "$M" >/dev/null || echo "door tops out of date (python3 tools/door_top.py --run)"
+  python3 tools/services.py check || echo "launchd drift (estate services)"
+  python3 tools/services.py ports >/dev/null || echo "port collision (python3 tools/services.py ports; P5)"
+  python3 tools/links.py --repair || echo "links scan failed"   # heals links a recorded move broke (fix policy link-repair); reports live / Oracle-HALO / vendor / gitignored broken links (A3)
+  python3 tools/score.py --machine "$M" >/dev/null || echo "score failed"
+fi
+if [ "$M" = laptop ] && [ "$(date +%u)" = 7 ]; then python3 tools/data-backup.py run all; fi
+# what runs on every server, read over ssh (client boxes are recorded, never mapped): machines/<m>/servers.json
+if [ "$M" = laptop ]; then python3 tools/servers.py scan || echo "servers: a box did not answer"; fi
+# a server's own data planes (plan/data-planes.json "machine"), every night: siso-vps pushes its WhatsApp sessions and relay data
+if [ "$M" != laptop ]; then python3 tools/data-backup.py run all --machine "$M" || echo "data planes: error"; fi
+# never commit a merge conflict: on 28 Sep an autostash pop left markers in plan/data-planes.json, this commit took
+# them, and every tool that reads the planes failed until 1 Oct
+CONFLICT=$( { git diff --name-only --diff-filter=U; grep -l -E '^(<<<<<<<|>>>>>>>) ' plan/*.json; } 2>/dev/null | sort -u | tr '\n' ' ')
+if [ -n "$CONFLICT" ]; then
+  echo "records NOT committed: merge conflict in $CONFLICT"
+  [ -x "$HOME/.claude/console/bin/console-post" ] && "$HOME/.claude/console/bin/console-post" -a ESTATE -k card \
+    -t "estate nightly: merge conflict ($M)" "The nightly did not commit: $CONFLICT has merge conflict markers. Resolve them in SISO_Agents/siso-estate, then commit." >/dev/null
+else
+git add machines plan && git commit -qm "estate: nightly records $M $(date +%F)" \
+  && gitleaks git . --log-opts=-1 --redact --no-banner >/dev/null 2>&1 \
+  && { git push -q || { git pull -q --rebase && git push -q; }; } || echo "records not pushed (nothing new, or the secret scan flagged the commit)"
+fi
+echo "=== $(date '+%F %T') nightly end"

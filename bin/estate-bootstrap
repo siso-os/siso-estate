@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Put this machine on the estate map (D7, Shaan 2026-09-23): ~/SISO_Workspace is a checkout of the one private map
+# sisodias/siso-city, with the same paths as every other machine; only the repos named here are cloned, the rest stay
+# on GitHub at the same place in the map. Idempotent.
+#
+#   estate-bootstrap <machine> [map/path/to/check/out ...]     e.g. estate-bootstrap vps-siso SISO_Agents/siso-estate
+#   ESTATE_ROOTS="$HOME/SISO_Workspace /opt" sets where the nightly looks for repos (a VPS keeps production in /opt).
+set -eu
+M=${1:?usage: estate-bootstrap <machine> [map paths...]}; shift
+WS=$HOME/SISO_Workspace
+command -v gh >/dev/null && gh auth setup-git >/dev/null 2>&1 || true
+if [ ! -d "$WS/.git" ]; then
+  [ -e "$WS" ] && { echo "$WS exists and is not the map; move it aside first"; exit 1; }
+  git clone -q https://github.com/sisodias/siso-city.git "$WS"
+fi
+cd "$WS"
+git pull -q --rebase origin main || true
+git submodule update --init SISO_Agents/siso-estate "$@"
+git -C SISO_Agents/siso-estate checkout -q -B main origin/main   # city hall follows main so the nightly can pull
+grep -q "ESTATE_MACHINE=" "$HOME/.profile" 2>/dev/null || echo "export ESTATE_MACHINE=$M" >> "$HOME/.profile"
+BIN=/usr/local/bin; [ -w "$BIN" ] || BIN=$HOME/.local/bin; mkdir -p "$BIN"
+for c in estate estate-manager estate-bootstrap; do ln -sf "$WS/SISO_Agents/siso-estate/bin/$c" "$BIN/$c"; done
+mkdir -p "$WS/SISO_Agents/siso-estate/machines/$M"
+if [ "$(uname)" = Linux ]; then
+  ( crontab -l 2>/dev/null | grep -v estate-nightly
+    echo "30 3 * * * ESTATE_MACHINE=$M ESTATE_ROOTS='${ESTATE_ROOTS:-$WS}' $WS/SISO_Agents/siso-estate/bin/estate-nightly" ) | crontab -
+fi
+echo "on the map as $M: $WS ($(git -C "$WS" submodule status | grep -c '^ ') checked out, $(git -C "$WS" submodule status | grep -c '^-') on GitHub only)"

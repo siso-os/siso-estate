@@ -1,0 +1,11 @@
+[Unit]
+Description=Dump HALO's six databases into the estate outbox (/srv/halo-outbox)
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/halo-estate-dump
+UMask=0077
+Nice=19
+IOSchedulingClass=idle
+TimeoutStartSec=30min

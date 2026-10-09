@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""siso-vps: take HALO's nightly drop into a root-only store, keep the retention set, encrypt it to GitHub.
+
+HALO pushes into /srv/backups/halo (user halo-backup: restrict + rrsync -wo -no-del -munge, so HALO can only add
+files there). This runs as root after oracle-offbox-backup (06:15 CEST on halo-vps):
+  1. every new databases/<stamp>/ run whose SHA256SUMS verifies is copied into /srv/halo-backups/databases/;
+     every new convex zip whose .sha256 verifies into /srv/halo-backups/convex/ (HALO cannot touch the store);
+  2. retention on the store: the newest run of each of the last 7 days plus the newest of each of the last 4
+     ISO weeks; the landing keeps 8 days (the store is the copy that counts);
+  3. `data-backup.py run halo-databases --machine vps-siso` (tar | zstd | age, one orphan commit to
+     HALO-AGENCY/siso-data-halo-databases); ESTATE_FORCE so the retention set is always the pushed set.
+  4. the non-database planes (HALO-BOX, 27 Sep): planes/<plane>/<stamp>/ runs, already encrypted on the box to HALO's
+     own key by halo-plane-pack, verified into /srv/halo-backups/planes/<plane>/ with the same 7 daily + 4 weekly
+     (ONE_OFF planes keep every run), then `data-backup.py run halo-<plane>` without ESTATE_FORCE: the plane only
+     commits when its store changed. Repos: HALO-AGENCY/halo-data-<plane>.
+Writes machines/vps-siso/halo-ingest.json. Exit 1 when a run fails its checksum or the plane does not push.
+Source: siso-estate tools/halo/halo-backup-ingest (HALO-ESTATE, 27 Sep 2026).
+"""
+import datetime as dt, hashlib, json, os, re, shutil, subprocess, sys, time
+
+LAND, STORE = "/srv/backups/halo", "/srv/halo-backups"
+EST = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+STAMP = re.compile(r"(\d{8})T(\d{6})")
+DAILY, WEEKLY, LAND_DAYS = 7, 4, 8
+PLANES, ONE_OFF = ("streaming-state", "box-config", "old-crm"), {"old-crm"}
+
+
+def sha(p):
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def when(name):
+    m = STAMP.search(name.replace("-", ""))
+    return dt.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S") if m else None
+
+
+def verify_sums(d):
+    lines = [l.split() for l in open(os.path.join(d, "SHA256SUMS")) if l.strip()]
+    return bool(lines) and all(sha(os.path.join(d, f.lstrip("*"))) == h for h, f in lines)
+
+
+def keep_set(names):
+    """Newest per day for the last DAILY days that have runs, newest per ISO week for the last WEEKLY weeks."""
+    dated = sorted(((when(n), n) for n in names if when(n)), reverse=True)
+    keep, days, weeks = set(), [], []
+    for t, n in dated:
+        if t.date() not in days and len(days) < DAILY:
+            days.append(t.date()); keep.add(n)
+        wk = t.isocalendar()[:2]
+        if wk not in weeks and len(weeks) < WEEKLY:
+            weeks.append(wk); keep.add(n)
+    return keep
+
+
+def data_backup(plane, force):
+    env = dict(os.environ, ESTATE_FORCE="1") if force else {k: v for k, v in os.environ.items() if k != "ESTATE_FORCE"}
+    r = subprocess.run([sys.executable, os.path.join(EST, "tools", "data-backup.py"), "run", plane,
+                        "--machine", "vps-siso"], capture_output=True, text=True, env=env)
+    last = (r.stdout.strip().splitlines() or ["{}"])[-1]
+    try:
+        return json.loads(last)
+    except ValueError:
+        return {"status": "error", "error": (r.stderr or last)[-300:]}
+
+
+def ingest_planes(report):
+    """Step 4: the encrypted non-database planes."""
+    report["planes"] = {}
+    for pl in PLANES:
+        land, store = os.path.join(LAND, "planes", pl), os.path.join(STORE, "planes", pl)
+        os.makedirs(store, mode=0o700, exist_ok=True)
+        new = []
+        for run in sorted(os.listdir(land)) if os.path.isdir(land) else []:
+            src, dst = os.path.join(land, run), os.path.join(store, run)
+            if os.path.exists(dst) or not when(run) or not os.path.exists(os.path.join(src, "SHA256SUMS")):
+                continue
+            if not verify_sums(src):
+                report["bad"].append(f"planes/{pl}/{run}"); continue
+            shutil.copytree(src, dst + ".part"); os.rename(dst + ".part", dst)
+            new.append(run)
+        runs = [r for r in os.listdir(store) if when(r)]
+        if pl not in ONE_OFF:
+            for r in set(runs) - keep_set(runs):
+                shutil.rmtree(os.path.join(store, r)); report["pruned"].append(f"store/planes/{pl}/{r}")
+        cutoff = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(days=LAND_DAYS)
+        for n in os.listdir(land) if os.path.isdir(land) else []:
+            if when(n) and when(n) < cutoff:
+                shutil.rmtree(os.path.join(land, n)); report["pruned"].append(f"landing/planes/{pl}/{n}")
+        entry = {"new_runs": new, "store_runs": sorted(r for r in os.listdir(store) if when(r))}
+        if entry["store_runs"]:
+            entry["plane"] = data_backup(f"halo-{pl}", force=False)
+        report["planes"][pl] = entry
+
+
+def main():
+    report = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "new_runs": [], "new_convex": [], "bad": [], "pruned": []}
+    for sub in ("databases", "convex"):
+        os.makedirs(os.path.join(STORE, sub), mode=0o700, exist_ok=True)
+    os.chmod(STORE, 0o700)
+    # 1. databases runs
+    ld = os.path.join(LAND, "databases")
+    for run in sorted(os.listdir(ld)) if os.path.isdir(ld) else []:
+        src, dst = os.path.join(ld, run), os.path.join(STORE, "databases", run)
+        if os.path.exists(dst) or not when(run) or not os.path.exists(os.path.join(src, "SHA256SUMS")):
+            continue
+        if not verify_sums(src):
+            report["bad"].append(f"databases/{run}"); continue
+        shutil.copytree(src, dst + ".part"); os.rename(dst + ".part", dst)
+        report["new_runs"].append(run)
+    # convex zips (each with <zip>.sha256)
+    lc = os.path.join(LAND, "convex")
+    for z in sorted(os.listdir(lc)) if os.path.isdir(lc) else []:
+        if not z.endswith(".zip") or os.path.exists(os.path.join(STORE, "convex", z)):
+            continue
+        sp = os.path.join(lc, z + ".sha256")
+        if not os.path.exists(sp) or open(sp).read().split()[0] != sha(os.path.join(lc, z)):
+            report["bad"].append(f"convex/{z}"); continue
+        for f in (z, z + ".sha256"):
+            shutil.copy2(os.path.join(lc, f), os.path.join(STORE, "convex", f))
+        report["new_convex"].append(z)
+    # 2. retention: databases runs, convex zips; landing kept LAND_DAYS
+    runs = os.listdir(os.path.join(STORE, "databases"))
+    for r in set(runs) - keep_set(runs):
+        shutil.rmtree(os.path.join(STORE, "databases", r)); report["pruned"].append(f"store/databases/{r}")
+    zips = [z for z in os.listdir(os.path.join(STORE, "convex")) if z.endswith(".zip")]
+    for z in set(zips) - keep_set(zips):
+        for f in (z, z + ".sha256"):
+            p = os.path.join(STORE, "convex", f)
+            if os.path.exists(p):
+                os.remove(p)
+        report["pruned"].append(f"store/convex/{z}")
+    cutoff = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) - dt.timedelta(days=LAND_DAYS)
+    for sub in ("databases", "convex"):
+        base = os.path.join(LAND, sub)
+        for n in os.listdir(base) if os.path.isdir(base) else []:
+            t = when(n)
+            if t and t < cutoff:
+                p = os.path.join(base, n)
+                shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+                report["pruned"].append(f"landing/{sub}/{n}")
+    report["store_runs"] = sorted(os.listdir(os.path.join(STORE, "databases")))
+    report["store_convex"] = sorted(z for z in os.listdir(os.path.join(STORE, "convex")) if z.endswith(".zip"))
+    # 3. the encrypted plane
+    report["plane"] = data_backup("halo-databases", force=True)
+    # 4. the non-database planes
+    ingest_planes(report)
+    json.dump(report, open(os.path.join(EST, "machines", "vps-siso", "halo-ingest.json"), "w"), indent=1)
+    planes = {k: v.get("plane", {}).get("status", "empty") for k, v in report["planes"].items()}
+    print(json.dumps({k: report[k] for k in ("at", "new_runs", "new_convex", "bad")} | {"plane": report["plane"].get("status"),
+                                                                                         "planes": planes}))
+    sys.exit(1 if report["bad"] or report["plane"].get("status") != "pushed"
+             or any(v not in ("pushed", "unchanged", "empty") for v in planes.values()) else 0)
+
+
+if __name__ == "__main__":
+    main()

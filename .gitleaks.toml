@@ -1,0 +1,28 @@
+# symlinks.jsonl records file paths; Hugging Face cache blob hashes next to "tokens" in a path
+# look like Sourcegraph tokens to the default rules (checked 2026-09-23: false positives).
+# The machine records list git commit ids (pushed_tips, heads); once a record names the rule
+# "sourcegraph-access-token" (a held repo's finding), every bare 40-hex commit id matches it
+# (checked 2026-09-24: 121 commit ids in backup.json, no token). Only that rule, only records,
+# only a bare 40-hex match; an sgp_ token still fails.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "symlink records hold cache blob hashes"
+paths = ['''machines/.*/symlinks\.jsonl''']
+
+[[allowlists]]
+description = "estate records: bare 40-hex strings are git commit ids"
+condition = "AND"
+targetRules = ["sourcegraph-access-token"]
+paths = ['''(^|/)machines/.*\.(json|jsonl|log)$''']
+regexTarget = "secret"
+regexes = ['''^[a-fA-F0-9]{40}$''']
+
+[[allowlists]]
+description = "project records quote each repo's one-line description; a word or path after 'password' is prose, not a key (no digits)"
+condition = "AND"
+targetRules = ["generic-api-key"]
+paths = ['''(^|/)machines/.*/(projects|census|piles)\.json$''']
+regexTarget = "secret"
+regexes = ['''^[A-Za-z_./-]{1,40}$''']
