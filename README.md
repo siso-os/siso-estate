@@ -18,8 +18,51 @@
 </p>
 
 <!-- /siso-os:header -->
-## What it is
 
-Keeps a machine full of agent repos in order: one map, a register of every repo, front doors, backups and a doctor.
+One command to find anything on a machine full of repos. SISO Estate scans every git repo under your workspace folder,
+remembers what each one is, and answers `estate where <words>` with the path. Our agents ask it before they create,
+clone or move anything, so two agents never put the same thing in two places.
 
-It is part of **Agent Base** in [SISO OS](https://github.com/siso-os), the open-source agent operating system we run SISO on. More on [the website](https://www.sisolabs.space/spyder/).
+More on [the website](https://www.sisolabs.space/agent-base/).
+
+## Install
+
+You need macOS or Linux, Python 3 and git. It reads the repos under `~/SISO_Workspace`, so keep your repos there (or
+make that folder and move them in).
+
+1. **Clone it and put it on your PATH:**
+   ```bash
+   git clone https://github.com/siso-os/siso-estate.git
+   cd siso-estate
+   export PATH="$PWD/bin:$PATH"   # add this line to ~/.zshrc or ~/.bashrc to keep it
+   ```
+2. **Scan your repos:**
+   ```bash
+   estate inventory
+   ```
+   It finds every git repo under `~/SISO_Workspace` and writes the list to `machines/<machine>/repos.json` in this folder.
+
+## Use it
+
+- `estate where <words>`: the best matches for a repo or folder, with its path and its GitHub repo.
+- `estate path <words>`: just the path, for scripts: `cd "$(estate path notes)"`.
+- `estate doctor`: checks the layout and lists anything out of place (exit 1 on a failure).
+- `estate inventory`: run it again after you add or move repos.
+- `estate --help`: every command.
+
+## What needs more setup
+
+The other commands (`map`, `census`, `fleet`, `backup`, `city`, `fix` and more) read plan files that describe our own
+machines, and the public copy leaves those out. Each one says which file it reads in `estate --help`; write that file
+for your machines and the command works. `docs/LEGEND.md` and `docs/MODEL.md` explain the layout the plan files follow.
+
+## How it works
+
+- **One list per machine:** `estate inventory` walks the workspace and records every repo: path, remote, last commit.
+- **Words to paths:** `where` scores names, paths and remotes against your words, so `estate where notes` finds
+  `apps/notes-app`.
+- **Layout as rules:** `doctor` checks each top-level folder against the plan, so agents keep the tree tidy.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
