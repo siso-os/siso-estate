@@ -54,3 +54,21 @@ PRs there; backup refs only."
 
 **How it is checked:** `backup.py plan` shows HALO-AGENCY checkouts as `own-private`/`clean` with target `HALO-AGENCY/<repo>`,
 and every halocrm path as `skip`. `tests/test_backup_owned.py` covers this.
+
+## Amendment, 2026-10-11: off the box to HALO's own Cloudflare R2, not siso-vps
+
+**Why:** Shaan, 11 Oct (via A0 17:01): "we don't use the SISO VPS anymore ... we should be just paying for the Halo".
+siso-vps had stopped answering: the 06:15 copy failed that morning (rsync 255), so nothing had left the box since.
+
+**Decision:**
+- `oracle-offbox-backup` puts the same four groups (Convex zips, donor dumps, the database runs, the planes) into HALO's
+  own bucket, `halo-media` under `backups/`, with the scoped key HALO already holds on the box. Never the same box,
+  never siso-vps: the script refuses an endpoint that is not Cloudflare R2. Every file not already age-encrypted is
+  encrypted on the box to HALO's public key first; the identity stays off the box.
+- From 12 Oct, siso-vps's `halo-backup-ingest`, its 7 daily + 4 weekly store and the GitHub data planes get nothing new.
+- Weaker than the siso-vps leg, and open: the box's key can delete (an R2 bucket lock on `backups/` closes it), and
+  nothing prunes yet (about 40 MB a night against R2's 10 GB free tier).
+
+**How it is checked:** `machines/halo-vps/r2-restore-proof.json`: every object comes back from R2 to the laptop,
+decrypts with HALO's identity and matches its run's checksums, and the newest database run restores into a throwaway
+Postgres 16.
