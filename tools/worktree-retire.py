@@ -5,6 +5,9 @@
   worktree-retire.py --only REPO/LANE ... [--run]
                                          an owner named these: no age rule; HEAD must be in main (or on a remote branch),
                                          no tracked change; untracked files are archived with the ignored ones
+  worktree-retire.py --pin-local ...     also clean, idle worktrees whose commits are only local: HEAD is pinned at
+                                         refs/estate-kept/<repo>/<lane> in the shared repo first, so nothing becomes
+                                         unreachable and nothing is pushed (Shaan, 14 Oct: "clean up 20-30 gigs on each")
   worktree-retire.py [--days 3] --run    retire: ignored files that are not rebuildable (screenshots, runs, notes) are
                                          moved to _archive/<date>-worktree-ignored/<repo>/<lane>/ first, then
                                          `git worktree remove` (never --force); a line per worktree in machines/<m>/removed.jsonl
@@ -61,7 +64,7 @@ def touched(p):
     return max(ts)
 
 
-def verdict(p, repo, lane, days, busy, named=False, halo=False, idle_hours=None):
+def verdict(p, repo, lane, days, busy, named=False, halo=False, idle_hours=None, pin=False):
     if (NEVER_PRIVATE if halo else NEVER_NAMED if named else NEVER).search(repo + "/" + lane) or lane in KEEP_NAMES:
         return "protected (HALO / private / standing)"
     if idle_hours is not None and not named:  # idle by the worktree's own activity, not by how old its commits are
@@ -73,9 +76,12 @@ def verdict(p, repo, lane, days, busy, named=False, halo=False, idle_hours=None)
             return f"commit in the last {days} days"
         if time.time() - os.lstat(os.path.join(p, ".git")).st_mtime < days * 86400:  # made today from an old commit
             return f"worktree made in the last {days} days"
-    if git(p, "status", "--porcelain", "--untracked-files=" + ("no" if named else "normal")).stdout.strip():
+    st = git(p, "status", "--porcelain", "--untracked-files=" + ("no" if named else "normal"))
+    if st.returncode:  # a broken worktree (its parent's metadata gone) must never read as clean
+        return "git cannot read it (orphaned worktree)"
+    if st.stdout.strip():
         return "uncommitted or untracked work"
-    if not landed(p):
+    if not pin and not landed(p):
         return "HEAD not in main nor on any remote branch"
     if any(b == p or b.startswith(p + "/") for b in busy):
         return "a process is inside"
@@ -95,6 +101,7 @@ def main():
     ap.add_argument("--idle-hours", type=float, help="instead of --days: nobody committed, checked out or made it here for H hours")
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--halo", action="store_true", help="HALO/Oracle lanes too (still clean, pushed, idle, not today's)")
+    ap.add_argument("--pin-local", action="store_true", help="clean, idle worktrees with local-only commits too: pin HEAD at refs/estate-kept/ first")
     ap.add_argument("--only", nargs="+", metavar="REPO/LANE", help="just these worktrees, named by their owner")
     a = ap.parse_args()
     busy = held()
@@ -106,7 +113,7 @@ def main():
             p = os.path.join(WT, repo, lane)
             if not os.path.exists(os.path.join(p, ".git")):
                 continue
-            v = verdict(p, repo, lane, a.days, busy, named=bool(a.only), halo=a.halo, idle_hours=a.idle_hours)
+            v = verdict(p, repo, lane, a.days, busy, named=bool(a.only), halo=a.halo, idle_hours=a.idle_hours, pin=a.pin_local)
             if v:
                 why_not[v] = why_not.get(v, 0) + 1
                 if a.only:
@@ -127,6 +134,12 @@ def main():
             head = git(p, "rev-parse", "HEAD").stdout.strip()
             branch = git(p, "branch", "--show-current").stdout.strip()
             main_repo = os.path.dirname(git(p, "rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip())
+            pinned = ""
+            if a.pin_local and not landed(p):  # local-only commits: a ref in the shared repo keeps them reachable
+                pinned = f"refs/estate-kept/{repo}/{lane}"
+                if git(main_repo, "update-ref", pinned, head).returncode or git(main_repo, "rev-parse", "--verify", pinned).stdout.strip() != head:
+                    print(f"  FAILED: could not pin {pinned}")
+                    continue
             r = git(main_repo, "worktree", "remove", p)
             if r.returncode:
                 print(f"  FAILED: {r.stderr.strip()[:200]}")
@@ -136,8 +149,8 @@ def main():
                 f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "what": "git worktree remove",
                                     "path": os.path.relpath(p, WS), "branch": branch, "head": head,
                                     "why": ("named by its owner; " if a.only else "") + "nothing to land (HEAD in main or on a remote branch), no tracked change, idle"
-                                    if a.only else f"clean, HEAD on a remote branch, idle, no commit for {a.days}+ days",
-                                    "kept_ignored": len(keep), "by": "ESTATE tools/worktree-retire.py"}) + "\n")
+                                    if a.only else (f"clean, idle; local-only commits pinned at {pinned}" if pinned else f"clean, HEAD on a remote branch, idle, no commit for {a.days}+ days"),
+                                    "kept_ignored": len(keep), **({"pinned": pinned} if pinned else {}), "by": "ESTATE tools/worktree-retire.py"}) + "\n")
     print("kept:", ", ".join(f"{k} {v}" for k, v in sorted(why_not.items(), key=lambda x: -x[1])))
     if a.run:
         print(f"retired {n}; free {(shutil.disk_usage(WS).free - free0) / 2**30:+.2f} GiB")

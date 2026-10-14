@@ -9,14 +9,14 @@ worktree, never chat history, never anything a running process has open (one `ls
 working folders, taken at the start). Hourly from launchd (com.siso.estate-storage-guard). Shaan, 8 Oct: "so we
 don't every three days have to keep cleaning 50 gig". The map of what fills the laptop: docs/STORAGE-MAP.md.
 """
-import argparse, glob, json, os, shutil, socket, subprocess, sys, time
+import argparse, fnmatch, glob, json, os, shutil, socket, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 HOME = os.path.expanduser("~")
 POL = json.load(open(os.path.join(REPO, "plan", "fix-policies.json")))
 RULES = [p for p in POL["policies"] if p.get("rule") == "storage" and not p.get("kind")]
-TOOLS = {"worktree-shed": ["worktree-shed.py"], "worktree-retire": ["worktree-retire.py", "--halo"]}
+TOOLS = {"worktree-shed": ["worktree-shed.py"], "worktree-retire": ["worktree-retire.py", "--halo"], "worktree-orphans": ["worktree-orphans.py"]}
 SHEDS = [p for p in POL["policies"] if p.get("rule") == "storage" and p.get("kind") in TOOLS]
 HOST = socket.gethostname().lower()
 MACHINE = os.environ.get("ESTATE_MACHINE") or ("laptop" if HOST.startswith("shaans-macbook") else "mini" if "mini" in HOST else HOST.split(".")[0])
@@ -80,6 +80,8 @@ def candidates(rule, held, now):
         keep = set(sorted(paths, key=lambda p: os.lstat(p).st_mtime)[-rule["keep_newest"]:]) if rule.get("keep_newest") else set()
         for p in paths:
             age_h = (now - os.lstat(p).st_mtime) / 3600
+            if any(fnmatch.fnmatch(os.path.basename(p), x) for x in rule.get("except", [])):
+                continue  # sockets, live session folders: never candidates
             if p in keep:
                 found.append((p, "one of the newest %d kept" % rule["keep_newest"]))
             elif age_h < rule.get("min_age_hours", 24):
@@ -104,6 +106,12 @@ def remove(path):
         shutil.rmtree(path, onerror=writable)
     else:
         os.remove(path)
+
+
+def floor_check():
+    """All four disks (laptop, mini, halo-vps, vps-siso): floor and days-until-full, one console card (tools/disk-watch.py)."""
+    out = sh(sys.executable, os.path.join(HERE, "disk-watch.py"), "--record", timeout=240) or ""
+    return [l.split("<- ", 1)[0].split()[0] for l in out.splitlines() if "<- " in l]
 
 
 def main():
@@ -145,6 +153,10 @@ def main():
     end = free_kib()
     line = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "run": bool(a.run), "items": cleared,
             "du_kib": kib_total, "free_kib_before": start, "free_kib_after": end}
+    if a.run and MACHINE == "laptop":
+        low = floor_check()
+        if low:
+            line["floor_alert"] = low
     if a.run:
         with open(RECEIPTS, "a") as f:
             for r in receipts + [line]:
