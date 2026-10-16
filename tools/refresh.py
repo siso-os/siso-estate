@@ -2,11 +2,13 @@
 """Refresh every map of the estate from the disk, so no map is ever hand-kept (Shaan, 24 Sep: "make it in a way where
 they kind of auto-update").
 
-  refresh.py [--light] [--machine laptop]
+  refresh.py [--light | --maps-only] [--machine laptop]
 
 Full (nightly, or after big moves): inventory -> hidden folders (dots.py) -> district doors (doors.py --commit) ->
-the laptop map (laptop-map.py) -> the umbrella map (umbrella.py build) -> census. --light (hourly): doors and the laptop
-map only, from the last full run's records. Each step's failure is printed and the rest still run.
+the laptop map (laptop-map.py) -> the umbrella map (umbrella.py build) -> census, followed on laptop by hourly
+maintenance. --light (hourly): the existing full hourly sequence, including server and law maintenance, using doors
+and laptop-map from the last full run's records. --maps-only: ONLY doors and laptop-map from the last inventory;
+it writes map records but skips all other work. Each step's failure is printed and the rest still run.
 """
 import argparse, os, subprocess, sys, time
 
@@ -25,11 +27,17 @@ def run(name, *cmd):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--light", action="store_true")
+    modes = ap.add_mutually_exclusive_group()
+    modes.add_argument("--light", action="store_true", help="run the existing hourly refresh and maintenance sequence")
+    modes.add_argument("--maps-only", action="store_true", help="run only doors and laptop-map from existing inventory")
     ap.add_argument("--machine", default=os.environ.get("ESTATE_MACHINE", "laptop"))
     a = ap.parse_args()
     m = ["--machine", a.machine]
     bad = 0
+    if a.maps_only:
+        bad += run("doors", "doors.py", "--commit") != 0
+        bad += run("laptop map", "laptop-map.py", *m) != 0
+        sys.exit(1 if bad else 0)
     if not a.light:
         bad += run("inventory", "inventory.py", *m) != 0
         bad += run("dots", "dots.py", *m) != 0

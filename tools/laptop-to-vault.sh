@@ -46,16 +46,19 @@ pack-old)
     "$(date +%F)" "$N" "$DAYS" "$F" "$V/$(basename "$F")" "$Z" "$ROOT" >> "$ROOT/OLD-TRANSCRIPTS-IN-VAULT.md"
   receipt "packed $N old transcripts for the mini vault drive (tar.zst, outbox)" "$ROOT/**/*.jsonl (mtime +$DAYS)" $((K*1024)) "$F" "$WHY" "sha256 of tar stream equal to decompressed archive and second read: $Z"
   echo "PACKED $N files $((K/1024)) MiB -> $(du -m "$F" | cut -f1) MiB; free $(free_)";;
-ship)
-  for F in "$OUTBOX"/*.tar.zst; do
-    [ -e "$F" ] || continue; B=$(basename "$F"); L=$(shasum -a 256 "$F" | cut -c1-64)
-    ssh -o BatchMode=yes -o ServerAliveInterval=30 mac-mini-herdr "mkdir -p $V && cat > '$V/$B.part'" < "$F" || { echo "COPY FAIL $B"; continue; }
-    M=$(ssh -o BatchMode=yes mac-mini-herdr "shasum -a 256 '$V/$B.part' | cut -c1-64")
-    [ "$L" = "$M" ] || { echo "VERIFY FAIL $B"; continue; }
-    ssh -o BatchMode=yes mac-mini-herdr "mv '$V/$B.part' '$V/$B'" || continue
-    [ -e "$F.list" ] && scp -q "$F.list" "mac-mini-herdr:$V/$B.list" && rm -f "$F.list"
-    S=$(stat -f %z "$F"); rm -f "$F"
-    receipt "shipped packed archive to the mini vault drive" "$F" "$S" "mac-mini:$V/$B" "outbox drained" "sha256 of archive equal on both sides: $L"
-    echo "SHIPPED $B"; done;;
+ship)  # ship [N]: N archives at once (default 4); one ssh stream to the mini tops out near 360 KiB/s (300 ms RTT)
+  ls "$OUTBOX"/*.tar.zst 2>/dev/null | xargs -n1 -P "${2:-4}" "$0" ship-one;;
+ship-one)
+  F="$2"; B=$(basename "$F"); mkdir "$F.lock" 2>/dev/null || exit 0  # another shipper has it
+  trap 'rmdir "$F.lock" 2>/dev/null' EXIT
+  [ -e "$F" ] || exit 0; L=$(shasum -a 256 "$F" | cut -c1-64)
+  ssh -o BatchMode=yes -o ServerAliveInterval=30 mac-mini-herdr "mkdir -p $V && cat > '$V/$B.part'" < "$F" || { echo "COPY FAIL $B"; exit 0; }
+  M=$(ssh -o BatchMode=yes mac-mini-herdr "shasum -a 256 '$V/$B.part' | cut -c1-64")
+  [ "$L" = "$M" ] || { echo "VERIFY FAIL $B"; exit 0; }
+  ssh -o BatchMode=yes mac-mini-herdr "mv '$V/$B.part' '$V/$B'" || exit 0
+  [ -e "$F.list" ] && scp -q "$F.list" "mac-mini-herdr:$V/$B.list" && rm -f "$F.list"
+  S=$(stat -f %z "$F"); rm -f "$F"
+  receipt "shipped packed archive to the mini vault drive" "$F" "$S" "mac-mini:$V/$B" "outbox drained" "sha256 of archive equal on both sides: $L"
+  echo "SHIPPED $B";;
 *) sed -n '2,15p' "$0"; exit 2;;
 esac

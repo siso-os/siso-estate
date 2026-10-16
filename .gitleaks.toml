@@ -26,3 +26,13 @@ targetRules = ["generic-api-key"]
 paths = ['''(^|/)machines/.*/(projects|census|piles)\.json$''']
 regexTarget = "secret"
 regexes = ['''^[A-Za-z_./-]{1,40}$''']
+
+# This frozen du inventory contains cache directory identifiers, not credential contents.
+# Restrict the exception to one artifact, one rule and complete size/path rows in known caches.
+[[allowlists]]
+description = "2026-10-05 mini du inventory: known cache directory hashes"
+condition = "AND"
+targetRules = ["sourcegraph-access-token"]
+paths = ['''(^|/)\.agents/runs/storage-20261005/mini/du-before\.tsv$''']
+regexTarget = "line"
+regexes = ['''(?m)^[0-9]+\t/Users/[^/]+/(?:\.local/share/opencode/snapshot|Library/Application Support/Code/CachedData|Library/Caches/(?:CloudKit/com\.apple\.[A-Za-z0-9.-]+|flutter_engine|io\.sentry))/[a-fA-F0-9]{40}$''']

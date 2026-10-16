@@ -16,7 +16,7 @@ REPO = os.path.dirname(HERE)
 HOME = os.path.expanduser("~")
 POL = json.load(open(os.path.join(REPO, "plan", "fix-policies.json")))
 RULES = [p for p in POL["policies"] if p.get("rule") == "storage" and not p.get("kind")]
-TOOLS = {"worktree-shed": ["worktree-shed.py"], "worktree-retire": ["worktree-retire.py", "--halo"], "worktree-orphans": ["worktree-orphans.py"]}
+TOOLS = {"worktree-shed": ["worktree-shed.py"], "worktree-retire": ["worktree-retire.py", "--halo"], "worktree-orphans": ["worktree-orphans.py"], "repo-offload": ["repo-offload.py"], "archive-offload": ["archive-sweep.py"]}
 SHEDS = [p for p in POL["policies"] if p.get("rule") == "storage" and p.get("kind") in TOOLS]
 HOST = socket.gethostname().lower()
 MACHINE = os.environ.get("ESTATE_MACHINE") or ("laptop" if HOST.startswith("shaans-macbook") else "mini" if "mini" in HOST else HOST.split(".")[0])
@@ -114,11 +114,69 @@ def floor_check():
     return [l.split("<- ", 1)[0].split()[0] for l in out.splitlines() if "<- " in l]
 
 
+def check_floor(floor_gib, run):
+    """Bound new heavy admissions; running work continues and holds expire through heavy."""
+    free = free_kib() * 1024
+    state = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "machine": MACHINE,
+             "floor_bytes": int(floor_gib * 2**30), "free_bytes": free,
+             "low": free < floor_gib * 2**30, "run": run}
+    if run:
+        heavy = os.path.join(HOME, ".local", "bin", "heavy")
+        hold = os.path.join(HOME, ".cache", "siso-heavy", "hold")
+        try:
+            with open(hold) as f:
+                existing = f.read()
+        except FileNotFoundError:
+            existing = ""
+        try:
+            active = float(existing.split("\t", 1)[0]) > time.time()
+        except ValueError:
+            active = bool(existing)  # preserve an unrecognised owner hold
+        # An active unrelated hold belongs to its caller.
+        ours = "ESTATE-MINI:" in existing
+        if state["low"] and (not active or ours):
+            result = subprocess.run([heavy, "--hold", "10", "ESTATE-MINI: system disk below %.0f GiB floor" % floor_gib],
+                                    capture_output=True, text=True, timeout=15)
+            state["admission_exit"] = result.returncode
+        elif state["low"]:
+            state["admission"] = "another owner's hold preserved"
+        directory = os.path.join(HOME, ".local", "state", "estate")
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, "mini-storage-floor.json")
+        with open(path + ".tmp", "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(path + ".tmp", path)
+    print("storage-floor: " + json.dumps(state, sort_keys=True))
+    return state
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--run", action="store_true", help="clear what the rules allow and write receipts")
     ap.add_argument("--quiet", action="store_true", help="print only the totals")
+    ap.add_argument("--floor-gib", type=float, default=60 if MACHINE == "mini" else 0,
+                    help="pause new heavy admissions below this floor (mini default: 60 GiB)")
+    ap.add_argument("--floor-only", action="store_true", help="only record the floor and update admission; no cleanup")
+    ap.add_argument("--cleanup-interval", type=int, default=0, help="minimum seconds between successful cleanups")
     a = ap.parse_args()
+    if a.cleanup_interval < 0:
+        ap.error("--cleanup-interval must be nonnegative")
+    if a.floor_gib < 0:
+        ap.error("--floor-gib must be nonnegative")
+    if a.floor_gib:
+        check_floor(a.floor_gib, a.run)
+    if a.floor_only:
+        return 0
+    cleanup_stamp = os.path.join(HOME, ".local", "state", "estate", "storage-guard-last-cleanup")
+    if a.run and a.cleanup_interval:
+        try:
+            with open(cleanup_stamp) as f:
+                last = float(f.read())
+        except (OSError, ValueError):
+            last = 0
+        if time.time() - last < a.cleanup_interval:
+            print("storage-guard: hourly cleanup not due")
+            return 0
     held = open_paths()
     if held is None:
         print("storage-guard: cannot see open files (lsof): touching nothing")
@@ -161,6 +219,10 @@ def main():
         with open(RECEIPTS, "a") as f:
             for r in receipts + [line]:
                 f.write(json.dumps(r) + "\n")
+    if a.run and a.cleanup_interval:
+        os.makedirs(os.path.dirname(cleanup_stamp), exist_ok=True)
+        with open(cleanup_stamp, "w") as f:
+            f.write(str(time.time()))
     verb = "cleared" if a.run else "would clear"
     print(f"storage-guard: {verb} {cleared if a.run else ''} {kib_total / 1048576:.2f} GiB by du; "
           f"free {start / 1048576:.1f} -> {end / 1048576:.1f} GiB (du overcounts APFS clones; the df change is the truth)")

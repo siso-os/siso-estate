@@ -33,6 +33,7 @@ Moved here from AGENTS.md on 26 Sep 2026, word for word, so the door stays under
 | `estate fleet [--all]` · `estate fleet pick <job-kind> [--n N]` · `estate fleet pull <machine> <job>` | every machine exec-probed now (cores, RAM, disk, what runs, what it is for; plan/machines.json) · the box for a job kind, off the laptop first · a remote job's results to `_data/fleet/<machine>/<job>/`. launchd `com.siso.estate-fleet` probes every 15 min and posts a console card when a box stops answering |
 | `estate move SRC DST --no-link --why ...` | move with a manifest line, worktree repair |
 | `estate umbrella build\|snapshot --push` · `estate restore --only <path> --run` | the map · bring a repo back |
+| `estate pull <path-or-name> [--to DIR] [--run]` | the one way back for anything off the laptop: GitHub clone, mini-vault archive (sha256-checked), or the data-plane/rebuild command; the five-bucket ledger it reads is at the top of docs/STORAGE-MAP.md (`home`/`need` in plan/storage-map.json) |
 | `python3 tools/houses.py keys\|house\|sync\|retire` | houses, sync, retire (ADR 0010, 0011) |
 | `python3 tools/bigfiles.py plan\|unzip\|split\|drop` | files over GitHub's limit made fit, losslessly (ADR 0014) |
 | `python3 tools/projects.py` · `tools/piles.py` | every project's state · loose piles by folder |
@@ -51,3 +52,13 @@ Moved here from AGENTS.md on 26 Sep 2026, word for word, so the door stays under
 | `machines/github/` | our GitHub repo list |
 | `plan/` | goal, placements (`github-placements.json`), machines registry, data planes, report builders, coordination log |
 | `.agents/` | handoff, queue, Shaan's words, project memory |
+
+## Verified data blocks (16 October 2026)
+
+- `estate data push <plane>`: configured storage backend, access and capacity admission, independent remote restore verification. `run` remains an alias.
+- `estate data restore <plane> <new-directory>`: ordered manifest locations with full hash verification; historical references remain available with `--ref`.
+- `estate data size`: organization-wide Git storage and Release asset inventory, decimal TB, and explicit incomplete coverage.
+- `bin/get --list` from a code repository: registered blocks and declared sizes without fetching.
+- `bin/get <set>/<NN>`: only that pinned data submodule, shallow checkout, then complete payload verification.
+
+See [DATA-BLOCKS.md](DATA-BLOCKS.md) for the manifest/index contract, access boundaries, limits and unprovisioned destination state.
