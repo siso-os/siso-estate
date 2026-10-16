@@ -1,0 +1,3 @@
+#!/bin/sh
+# Runs against the calling code repository; --list never downloads block payloads.
+exec python3 "$(dirname "$0")/../tools/get-data.py" "$@"

@@ -3,7 +3,9 @@
 
   storage-map.py            one throttled du pass over the whole Data volume, then render docs/STORAGE-MAP.md and
                             write machines/<m>/storage-tree.json; each run's sizes go to machines/<m>/storage-history.jsonl
-  storage-map.py --render   render again from the last tree (no du)
+  storage-map.py --render   render again from the last tree (no du); --tree FILE reads another tree file
+  The top of the page is the ledger (tools/ledger.py): every byte in one of five buckets (WORKING, SAFE COPY,
+  REBUILDABLE, ONLY HERE, UNMAPPED) from each place's optional home/need fields, and how each comes back (`estate pull`).
 
 Shaan, 8 Oct: "map out absolutely every gigabyte on our laptop, see where it is, see where it's hidden dot folders,
 see where it's work trees, and then note it down in the estate ... so it's always tracked". The disk adds up: APFS
@@ -14,6 +16,9 @@ and every hidden folder in ~ gets its own line. GB/day compares with the newest 
 last" with the run before this one. du counts APFS clones in full, so folders can add to slightly more than the volume.
 """
 import argparse, json, os, re, socket, subprocess, sys, time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -27,6 +32,7 @@ if MACHINE != "laptop":  # the same map on every machine (Shaan, 8 Oct ~21:00: "
     DOC = os.path.join(REPO, "docs", f"STORAGE-MAP-{MACHINE}.md")
 TREE = os.path.join(REPO, "machines", MACHINE, "storage-tree.json")
 HIST = os.path.join(REPO, "machines", MACHINE, "storage-history.jsonl")
+REPOS = os.path.join(REPO, "machines", MACHINE, "repos.json")
 WT = os.path.join(HOME, "SISO_Workspace", "_data", "worktrees")
 GIB = 1048576  # KiB
 SHOW = GIB // 2  # a folder gets its own line from 0.5 GiB
@@ -126,7 +132,47 @@ def growth(path, kib, now, hist, min_age):
     return None
 
 
-def render(t, m):
+def render_ledger(t, m, repos_json=None, now=None, mtime=ledger.newest_mtime):
+    """The five-bucket table and the per-place list, as lines for the top of the page."""
+    now = now or t["t"]
+    bk = os.path.join(os.path.dirname(REPOS), "backup.json")
+    repos = ledger.repo_index(repos_json if repos_json is not None else json.load(open(REPOS)) if os.path.exists(REPOS) else {},
+                              json.load(open(bk)) if repos_json is None and os.path.exists(bk) else None)
+    rows, un, sums, here_working = ledger.ledger(t["tree"], m["places"], rule_for, repos, t.get("worktrees", []), t["volumes"], now, mtime)
+    g = lambda k: k / GIB
+    total = sum(sums.values())
+    free = t["free_gib"]
+    L = ["## Where every byte is, and how it comes back", "",
+         f"Shaan, 16 Oct: clean it once, know where everything is, push what must be pushed, know how it is pulled back. "
+         f"Each place's master copy is its `home` (github:, plane:, vault:, rebuild:, here, system); `need` is working or cold "
+         f"(auto: changed in the last {ledger.DAYS} days). Both are optional fields beside `rule` in `plan/storage-map.json`. "
+         f"Pull anything back with `estate pull <path-or-name> [--run]`.", "",
+         "| Bucket | GiB | Share | Meaning |", "|---|---:|---:|---|"]
+    for b in ledger.BUCKETS:
+        extra = f" (of which only copy: {g(here_working):.1f} GiB)" if b == ledger.WORKING and here_working else ""
+        L.append(f"| **{b}** | {g(sums[b]):.1f} | {100 * sums[b] / total:.0f}% | {ledger.WHAT[b]}{extra} |")
+    can_go = sums[ledger.SAFE] + sums[ledger.REBUILD] - sum(r["kib"] for r in rows if r["bucket"] == ledger.REBUILD and r["home"] == "system")
+    L += [f"| **Total measured** | {g(total):.1f} | 100% | Data volume tree + non-Data volumes |", "",
+          f"**Free now {free:.1f} GiB. Could be free: {free + g(can_go):.1f} GiB** (free + SAFE COPY {g(sums[ledger.SAFE]):.1f} "
+          f"+ cold REBUILDABLE {g(can_go - sums[ledger.SAFE]):.1f}). Nothing in ONLY HERE or UNMAPPED is ever a candidate.", ""]
+    for b in ledger.BUCKETS[:4]:
+        rs = sorted((r for r in rows if r["bucket"] == b), key=lambda r: -r["kib"])
+        if not rs:
+            continue
+        L += [f"### {b} ({g(sums[b]):.1f} GiB)", "", "| GiB | Place | Home | Need | Comes back with |", "|---:|---|---|---|---|"]
+        small = [r for r in rs if r["kib"] < GIB // 20]
+        for r in rs:
+            if r not in small:
+                L.append(f"| {g(r['kib']):.2f} | `{r['path']}` | {r['home']}{'' if r['why'] in ('declared', '') else ' — ' + r['why']} | {r['need']} | {r['comes_back']} |")
+        if small:
+            L.append(f"| {g(sum(r['kib'] for r in small)):.2f} | {len(small)} places under 0.05 GiB each | | | |")
+        L.append("")
+    L += [f"### {ledger.UNMAPPED} ({g(sums[ledger.UNMAPPED]):.1f} GiB, biggest 12 of {len(un)})", "", "| GiB | Folder (its own bytes, not counting places inside) |", "|---:|---|"]
+    L += [f"| {g(k):.2f} | `{nice(p)}` |" for p, k in un[:12]]
+    return L + [""]
+
+
+def render(t, m, repos_json=None):
     places, now, hist = m["places"], t["t"], t.get("hist", [])
     L = [f"# {MACHINE.capitalize()} storage map — {t['at']}", "",
          "Generated by `tools/storage-map.py` (one throttled du over the whole disk; weekly and on demand). Owners and",
@@ -140,7 +186,7 @@ def render(t, m):
     for x in t["volumes"]:
         if x["name"] != "_container_used":
             L.append(f"| {x.get('role')} | {x['bytes'] / 2**30:.1f} | {what.get(x.get('role'), '')} |")
-    L += ["", "## Every gigabyte on the Data volume", "",
+    L += [""] + render_ledger(t, m, repos_json) + ["## Every gigabyte on the Data volume", "",
           "Each folder of 0.5 GiB or more, biggest first; *smaller items* is everything under it below 0.5 GiB. "
           "Δ = change since the last run; /day from a run at least 20 h older.", ""]
 
@@ -195,10 +241,12 @@ def render(t, m):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--render", action="store_true")
+    ap.add_argument("--tree", default=TREE, help="with --render: read this tree file")
+    ap.add_argument("--doc", default=DOC, help="with --render: write the page here")
     a = ap.parse_args()
     m = json.load(open(MAP))
     if a.render:
-        t = json.load(open(TREE))
+        t = json.load(open(a.tree))
     else:
         now, hist = time.time(), history()
         sizes = walk()
@@ -218,7 +266,7 @@ def main():
         t["hist"] = hist[-60:]
         json.dump({k: v for k, v in t.items() if k != "hist"}, open(TREE, "w"), indent=0)
     t.setdefault("hist", history()[:-1][-60:])
-    open(DOC, "w").write(render(t, m))
+    open(a.doc if a.render else DOC, "w").write(render(t, m))
     print(f"storage-map: {t['free_gib']:.1f} GiB free; tree, {len(t['dots'])} hidden folders, "
           f"{len(t['worktrees'])} worktrees -> {os.path.relpath(DOC, REPO)}")
 

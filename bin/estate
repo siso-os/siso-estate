@@ -2,6 +2,7 @@
 """estate: find anything on this machine, check the layout, back it up.
 
   estate where <words...>     best homes for a thing (path, what it is, its GitHub repo)
+  estate home [words...]      private whole-home inventory; --serve opens a local map service
   estate path <words...>      just the best path (for scripts): cd "$(estate path oracle)"
   estate map                  the city map: every district and what lives there
   estate doctor               layout checks (exit 1 on a failure)
@@ -11,6 +12,7 @@
   estate data plan|run PLANE  backup of data outside repos (encrypted, or plain private) (plan/data-planes.json)
   estate umbrella build|snapshot [--push]   the machine umbrella repo (~/SISO_Workspace)
   estate restore [--run]      rebuild every repo from the umbrella's restore map
+  estate pull PATH|NAME [--to DIR] [--run]   the one way back: clone from GitHub, unpack from the mini vault, or print the plane/rebuild command
   estate census               count the city: repos on/off the map, disk-only work, duplicate homes, homeless files
   estate brief [--mark]       the Estate Manager's boot packet: what changed since the last session (--mark ends one)
   estate report "<what, where>"   any agent: file a mess you found outside your task into the Estate Manager's inbox
@@ -223,7 +225,16 @@ def cmd_where(args):
     for b in exact:                    # a postcode resolves in one step (ADR 0018)
         print(f"~/SISO_Workspace/{b['path']}  [postcode {b['postcode']}]\n{reg_line(b)}")
     res = where(q)
-    if not res and not exact:
+    home_rows = []
+    home_db = os.path.join(WS, '_data', 'estate-home-backup-20261016', 'inventory.sqlite')
+    if q and os.path.isfile(home_db):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('estate_home_map', os.path.join(REPO, 'tools', 'home_map.py'))
+        if os.path.isfile(spec.origin):
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            home_rows = module.search(module.default_inventory(), q, limit=10)
+    if not res and not exact and not home_rows:
         print("nothing found; try fewer words, or `estate map`")
         return 1
     shown = {os.path.join(WS, b["path"]) for b in exact}
@@ -237,6 +248,10 @@ def cmd_where(args):
         rel = p[len(WS) + 1:] if p.startswith(WS + "/") else None
         if rel in reg:
             print(reg_line(reg[rel]))
+        shown.add(p)
+    for row in home_rows:
+        if row['path'] not in shown:
+            print(f"{row['path']}\n    {row['what_it_is']} · {row['backup_status']} · {row['github_location'] or 'no verified GitHub location'}")
     return 0
 
 
@@ -418,6 +433,8 @@ def main():
     c, rest = a[0], a[1:]
     if c == "where":
         return cmd_where(rest)
+    if c == "home":
+        return passthrough("home_map.py", rest)
     if c == "path":
         return cmd_path(rest)
     if c == "map":
@@ -468,6 +485,8 @@ def main():
         return passthrough("move.py", rest)
     if c == "restore":
         return passthrough("restore.py", rest)
+    if c == "pull":
+        return passthrough("pull.py", rest)
     if c == "umbrella":
         return passthrough("umbrella.py", [*rest[:1], "--machine", machine(), *rest[1:]] if rest and rest[0] == "build" else rest)
     if c == "data":
