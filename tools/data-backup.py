@@ -153,17 +153,64 @@ def recipient():
     return open(os.path.join(REPO, "plan", "age-recipient.txt")).read().split()[0]
 
 
+def rmtree_retry(path, tries=6):
+    """shutil.rmtree that survives a git child still writing into the tree (ENOTEMPTY)."""
+    for attempt in range(tries):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(2 * (attempt + 1))
+
+
+RATE_LIMIT_MAX_WAIT = 75 * 60
+
+
+def rate_limited(text):
+    text = (text or "").lower()
+    return "rate limit" in text or "secondary rate" in text or "abuse detection" in text
+
+
+def wait_for_rest_quota(max_wait=RATE_LIMIT_MAX_WAIT):
+    """Sleep until the REST core quota resets. `gh api rate_limit` itself is not counted."""
+    code, output, _ = sh("gh", "api", "rate_limit", timeout=60)
+    reset = None
+    if not code:
+        try:
+            reset = json.loads(output)["resources"]["core"]["reset"]
+        except (ValueError, KeyError, TypeError):
+            pass
+    delay = min(max_wait, max(30, reset - time.time() + 5)) if reset else 120
+    time.sleep(delay)
+
+
+def gh_rest(*args, timeout=300, tries=4):
+    """Run a `gh` REST command: bounded retries for transient failures, and a wait for
+    the quota reset (not a crash) when GitHub answers with a rate limit."""
+    waited = attempt = 0
+    while True:
+        code, output, err = sh("gh", *args, timeout=timeout)
+        if not code:
+            return code, output, err
+        if rate_limited(err + output) and waited < 3:
+            waited += 1
+            wait_for_rest_quota()
+            continue
+        attempt += 1
+        if attempt >= tries:
+            return code, output, err
+        time.sleep(15 * attempt)
+
+
 def api_json(endpoint, paginate=False):
-    args = ["gh", "api", endpoint]
+    args = ["api", endpoint]
     if paginate:
         args += ["--paginate", "--slurp"]
-    # A transient gh failure must not kill a long backup lane: retry a bounded number of times.
-    for attempt in range(4):
-        code, output, _ = sh(*args, timeout=300)
-        if not code:
-            break
-        if attempt < 3:
-            time.sleep(15 * (attempt + 1))
+    code, output, _ = gh_rest(*args)
     if code:
         raise RuntimeError("GitHub inventory unavailable")
     value = json.loads(output)
@@ -230,6 +277,69 @@ def reservation_path():
     return WORK + "-capacity.json"
 
 
+REST_CACHE_TTL = 600
+
+
+def _rest_cache_path():
+    return reservation_path() + ".rest-cache.json"
+
+
+def _load_rest_cache():
+    try:
+        with open(_rest_cache_path()) as source:
+            value = json.load(source)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_rest_cache(cache):
+    tmp = _rest_cache_path() + f".{os.getpid()}.tmp"
+    with open(tmp, "w") as output:
+        json.dump(cache, output)
+    os.replace(tmp, _rest_cache_path())
+
+
+def cached_inventory():
+    """Each admission used to list every org repo plus its releases (hundreds of REST calls),
+    and lanes retry every 10 s, which spent the 5,000/hour core quota. Reuse a complete
+    inventory for REST_CACHE_TTL; bytes released since are added in release_reservation, and
+    bytes retained after an attempted write stay charged in the reservation state."""
+    cache = _load_rest_cache()
+    entry = cache.get("inventory")
+    if entry and time.time() - entry.get("at", 0) < REST_CACHE_TTL and entry["value"].get("complete"):
+        return entry["value"]
+    value = github_inventory()
+    if value["complete"]:
+        cache["inventory"] = {"at": time.time(), "value": value}
+        _save_rest_cache(cache)
+    return value
+
+
+def stored_bytes(inventory, owner, repo):
+    return next((r["git_objects_bytes"] + r["release_assets_bytes"] for r in inventory["repositories"] if r["repo"] == f"{owner}/{repo}"), None)
+
+
+def refresh_inventory():
+    value = github_inventory()
+    if value["complete"]:
+        cache = _load_rest_cache()
+        cache["inventory"] = {"at": time.time(), "value": value}
+        _save_rest_cache(cache)
+    return value
+
+
+def boundary_proven(owner, repo):
+    entry = _load_rest_cache().get("boundary", {}).get(f"{owner}/{repo}".lower())
+    return bool(entry) and time.time() - entry < REST_CACHE_TTL
+
+
+def remember_boundary(owner, repo):
+    cache = _load_rest_cache()
+    cache.setdefault("boundary", {})[f"{owner}/{repo}".lower()] = time.time()
+    _save_rest_cache(cache)
+
+
 def coordinator_admission(machine):
     try:
         with open(os.path.join(REPO, "plan", "github-data-storage.json")) as source:
@@ -252,7 +362,14 @@ def release_reservation(token, retain_remote=False):
             state[token]["state"] = "remote-write-attempted"
             state[token]["local_peak_bytes"] = 0
         else:
-            state.pop(token, None)
+            record = state.pop(token, None)
+            cache = _load_rest_cache()
+            if record and "inventory" in cache:
+                for item in cache["inventory"]["value"].get("repositories", []):
+                    if item["repo"] == record["repo"]:
+                        item["git_objects_bytes"] += record["bytes"]
+                cache["inventory"]["value"]["observed_bytes"] += record["bytes"]
+                _save_rest_cache(cache)
         with open(path, "w") as output:
             json.dump(state, output)
 
@@ -272,21 +389,23 @@ def admit_upload(pl, planned_bytes, local_peak_bytes=None, machine="laptop", str
     teams = pl.get("github_access_teams")
     if not isinstance(teams, list) or not teams or any(not isinstance(t, str) for t in teams):
         return False, "authorized storage reader teams are not declared"
-    info = api_json(f"repos/{owner}/{repo}")
-    if info.get("private") is not True or info.get("permissions", {}).get("push") is not True:
-        return False, "private writable storage repository not proven"
-    org = api_json("orgs/siso-data")
-    if org.get("default_repository_permission") != "none":
-        return False, "organization default reader isolation not proven"
-    actual = api_json(f"repos/{owner}/{repo}/teams?per_page=100", paginate=True)
-    direct = api_json(f"repos/{owner}/{repo}/collaborators?affiliation=direct&per_page=100", paginate=True)
-    if {t["slug"] for t in actual} != set(teams) or direct:
-        return False, "storage reader boundary differs from declared teams"
+    if not boundary_proven(owner, repo):
+        info = api_json(f"repos/{owner}/{repo}")
+        if info.get("private") is not True or info.get("permissions", {}).get("push") is not True:
+            return False, "private writable storage repository not proven"
+        org = api_json("orgs/siso-data")
+        if org.get("default_repository_permission") != "none":
+            return False, "organization default reader isolation not proven"
+        actual = api_json(f"repos/{owner}/{repo}/teams?per_page=100", paginate=True)
+        direct = api_json(f"repos/{owner}/{repo}/collaborators?affiliation=direct&per_page=100", paginate=True)
+        if {t["slug"] for t in actual} != set(teams) or direct:
+            return False, "storage reader boundary differs from declared teams"
+        remember_boundary(owner, repo)
     path = reservation_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        inventory = github_inventory()
+        inventory = cached_inventory()
         if not inventory["complete"]:
             return False, "organization storage inventory incomplete; upload denied"
         if os.path.exists(path):
@@ -316,7 +435,12 @@ def admit_upload(pl, planned_bytes, local_peak_bytes=None, machine="laptop", str
         if shutil.disk_usage(probe).free - reserved_local - local_peak_bytes < floor:
             return False, "local allocation would cross the preserved free-space floor"
         same_repo = sum(r["bytes"] for r in state.values() if r["repo"] == f"{owner}/{repo}")
-        stored = next((r["git_objects_bytes"] + r["release_assets_bytes"] for r in inventory["repositories"] if r["repo"] == f"{owner}/{repo}"), None)
+        stored = stored_bytes(inventory, owner, repo)
+        if stored is None:
+            # A shard created after the cached inventory was taken is absent from it; without
+            # a fresh look every new shard reads as full and lanes mint empty repos in a loop.
+            inventory = refresh_inventory()
+            stored = stored_bytes(inventory, owner, repo)
         if stored is None or stored + same_repo + planned >= dm.SHARD_LIMIT:
             return False, "repository shard capacity requires a new shard"
         if inventory["observed_bytes"] + outstanding + planned >= 5_000_000_000_000:
@@ -962,7 +1086,7 @@ def run_streamed(pl, machine, inc, run_id, fingerprint, profile, archive_factory
                 start_path = bootstrap / "UPLOAD.json"
                 start_path.write_text('{"complete": false}')
                 target = stream_git_part(start_path, f"https://github.com/{owner}/{repo}.git", f"refs/heads/uploads/{machine}/{run_id}", guard)
-                shutil.rmtree(bootstrap)
+                rmtree_retry(bootstrap)
                 guard.remote_attempted = True
                 if guard.shell("gh", "release", "create", release, "--repo", f"{owner}/{repo}", "--target", target, "--title", "Immutable streamed snapshot", "--notes", "Incomplete until a verified snapshot manifest is published")[0]:
                     raise RuntimeError("streamed release creation failed")
@@ -990,7 +1114,7 @@ def run_streamed(pl, machine, inc, run_id, fingerprint, profile, archive_factory
                         sha.update(block)
                         length += len(block)
                 if not length:
-                    shutil.rmtree(part_dir)
+                    rmtree_retry(part_dir)
                     break
                 total += length
                 if total > upper:
@@ -1010,14 +1134,14 @@ def run_streamed(pl, machine, inc, run_id, fingerprint, profile, archive_factory
                     commit = stream_git_part(path, f"https://github.com/{owner}/{repo}.git", ref, guard)
                     pin["commits"][path.name], pin["refs"][path.name] = commit, ref
                 # Discard upload workfile AND its independent Git store before download.
-                shutil.rmtree(part_dir)
+                rmtree_retry(part_dir)
                 download = stage / "download"
                 download.mkdir()
                 guard.check(additional=length * 3 + STREAM_METADATA)
                 dm.verify_streamed_part(backend, part, pin, download, guard.shell, validator, remote_whole,
                                        machine, guard.check, guard.register)
                 guard.check()
-                shutil.rmtree(download)
+                rmtree_retry(download)
                 parts.append(part)
             output.close()
             producer_thread.join(timeout=60)
@@ -1087,7 +1211,7 @@ def run_streamed(pl, machine, inc, run_id, fingerprint, profile, archive_factory
             if producer_thread:
                 producer_thread.join(timeout=5)
             if stage.exists():
-                shutil.rmtree(stage)
+                rmtree_retry(stage)
             release_reservation(reason, retain_remote=guard.remote_attempted)
 
 def secrets_in(pl, inc):

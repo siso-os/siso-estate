@@ -18,6 +18,7 @@ POL = json.load(open(os.path.join(REPO, "plan", "fix-policies.json")))
 RULES = [p for p in POL["policies"] if p.get("rule") == "storage" and not p.get("kind")]
 TOOLS = {"worktree-shed": ["worktree-shed.py"], "worktree-retire": ["worktree-retire.py", "--halo"], "worktree-orphans": ["worktree-orphans.py"], "repo-offload": ["repo-offload.py"], "archive-offload": ["archive-sweep.py"]}
 SHEDS = [p for p in POL["policies"] if p.get("rule") == "storage" and p.get("kind") in TOOLS]
+CAPS = [p for p in POL["policies"] if p.get("rule") == "storage" and p.get("kind") == "log-cap"]
 HOST = socket.gethostname().lower()
 MACHINE = os.environ.get("ESTATE_MACHINE") or ("laptop" if HOST.startswith("shaans-macbook") else "mini" if "mini" in HOST else HOST.split(".")[0])
 # the mini runs the guard from a clean worktree refreshed each hour: its receipts live outside the repo (ESTATE_RECEIPTS)
@@ -202,6 +203,27 @@ def main():
             cleared += 1
             kib_total += kib
             receipts.append({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "rule": rule["id"], "path": path, "du_kib": kib})
+    for rule in CAPS:  # logs a live service keeps writing: keep the newest tail in place (the writer's handle stays valid)
+        for g in rule["paths"]:
+            for path in expand(g):
+                size = os.path.getsize(path) if os.path.isfile(path) and not os.path.islink(path) else 0
+                if size <= rule.get("max_mib", 50) * 1048576:
+                    continue
+                keep = rule.get("keep_mib", 5) * 1048576
+                if not a.run:
+                    print(f"  would {rule['id']:<24} {(size - keep) / 1073741824:6.2f} GiB  {path} (keep last {keep // 1048576} MiB)")
+                    kib_total += (size - keep) // 1024
+                    continue
+                with open(path, "r+b") as fh:
+                    fh.seek(size - keep)
+                    tail = fh.read()
+                    fh.seek(0)
+                    fh.write(tail)
+                    fh.truncate(len(tail))
+                cleared += 1
+                kib_total += (size - keep) // 1024
+                receipts.append({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "rule": rule["id"], "path": path,
+                                 "du_kib": (size - keep) // 1024, "kept_tail_mib": keep // 1048576})
     for rule in SHEDS:  # idle worktrees: their own tools, their own receipt lines
         tool, *flags = TOOLS[rule["kind"]]
         out = sh(sys.executable, os.path.join(HERE, tool), *flags, "--idle-hours", str(rule.get("idle_hours", 6)),

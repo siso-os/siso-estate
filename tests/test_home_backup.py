@@ -14,6 +14,35 @@ SPEC.loader.exec_module(mod)
 
 
 class CoverageTests(unittest.TestCase):
+    def test_boundary_hold_quarantines_excluded_and_linked_files(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(os.path.realpath(tmp))
+            (home / 'secret').mkdir()
+            (home / 'good.txt').write_text('x')
+            (home / 'secret/k').write_text('y')
+            os.symlink(home / 'good.txt', home / 'link.txt')
+            db = mod.open_state(home / 'run')
+            plane = {'name': 'p', 'root': str(home), 'paths': ['.'], 'exclude': ['secret']}
+            batch = [str(home / 'good.txt'), str(home / 'secret/k'), str(home / 'link.txt')]
+            with patch.object(mod.backup, 'WS', str(home / 'ws')):
+                bad = mod.quarantine_unsnapshottable(db, plane, batch, {}, mod.BOUNDARY_HOLD)
+            self.assertEqual(sorted(bad), sorted([batch[1], batch[2]]))
+
+    def test_snapshot_hold_quarantines_only_unopenable_files(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(os.path.realpath(tmp))
+            good, fifo = home / 'good.txt', home / 'pipe'
+            good.write_text('x')
+            os.mkfifo(fifo)
+            db = mod.open_state(home / 'run')
+            bad = mod.quarantine_unsnapshottable(db, {'root': str(home)}, [str(good), str(fifo), str(home / 'gone')],
+                                                 {str(fifo): 0, str(home / 'gone'): 0})
+            self.assertEqual(sorted(bad), sorted([str(fifo), str(home / 'gone')]))
+            rows = dict(db.execute('SELECT path,status FROM coverage').fetchall())
+            self.assertEqual(rows, {str(fifo): 'unreadable-or-vanished', str(home / 'gone'): 'unreadable-or-vanished'})
+
     def test_refetch_relative_path_and_cached_verified_publication(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp).resolve()
