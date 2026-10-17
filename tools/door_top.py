@@ -16,6 +16,7 @@ submodule checkout. Written only where AGENTS.md is clean (`git diff --quiet -- 
 working herdr agent stands in the repo. Everything below the block is the owner's and is never touched.
 """
 import argparse, json, os, re, sys
+from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -123,10 +124,9 @@ def main():
     busy = fix.working_agents()
     counts, stale, sample = {"live": 0, "current": 0, "write": 0, "written": 0, "skip": 0, "working_copy": 0, "missing": 0}, [], None
     missing = []
-    for x in code["results"]:
-        if not live(x) or (a.only and a.only not in x["path"]):
-            continue
-        counts["live"] += 1
+    todo = [x for x in code["results"] if live(x) and not (a.only and a.only not in x["path"])]
+
+    def probe(x):
         top = os.path.join(WS, x["path"])
         door = os.path.join(top, "AGENTS.md")
         why = "not on this disk" if not os.path.isdir(top) else fix.skip_reason(x, busy)
@@ -140,6 +140,18 @@ def main():
             why = "AGENTS.md has someone's uncommitted change"
         if not why and fix.git(top, "ls-files", "--error-unmatch", "AGENTS.md").returncode:
             why = "AGENTS.md is not tracked here (the owner's choice)"
+        return why, text, new
+
+    # the git probes are independent per repo and read-only: with no --run, ask all repos at once (git is the whole cost)
+    if a.run:
+        probes = map(probe, todo)
+    else:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            probes = list(pool.map(probe, todo))
+    for x, (why, text, new) in zip(todo, probes):
+        counts["live"] += 1
+        top = os.path.join(WS, x["path"])
+        door = os.path.join(top, "AGENTS.md")
         if new == text:
             counts["current"] += 1
             continue

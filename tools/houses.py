@@ -35,7 +35,8 @@ OWNER = "sisodias"
 DATE = time.strftime("%Y-%m-%d")
 GH_MAX = 95 * 1024 * 1024
 MIN_FREE = 5 * 1024 ** 3  # never write the disk below this: a full disk crashed herdr and every agent (24 Sep)
-BATCH = 1500 * 1024 * 1024  # a house bigger than this is pushed in batches (GitHub refuses a push over 2 GB)
+BATCH = 400 * 1024 * 1024  # a house bigger than this is pushed in batches (GitHub refuses a push over 2 GB, and a
+# 1.5 GB batch timed out with HTTP 408 on the laptop's upload, 17 Oct)
 KEYS = re.compile(r"(^|/)(\.env(\.[\w.-]+)?|[^/]*\.(pem|key|p12|pfx|keystore|jks)|credentials?[^/]*\.(json|env|txt)|service-account[^/]*\.json|"
                   r"\.npmrc|\.netrc|secrets?\.(json|ya?ml|toml|env)|[^/]*api[-_]?key[^/]*\.(txt|json|env)|\.?mcp\.json)$"
                   r"|/\.(credentials|keys|secrets)/[^/]+$", re.I)   # 24 Sep: 7 key files in such folders had been missed
@@ -197,21 +198,100 @@ def scan_dir(path):
 
 
 # ---------- house ----------
-def flagged_files(path, rng="HEAD"):
+# The scan, redesigned 17 Oct (a 9.7 GB house took over an hour in `gitleaks git` and timed out under load):
+# - only what the house tracks (the index), not history and not ignored piles
+# - blobs already found clean are never scanned again (cache by blob sha: reruns and the post-park check are instant)
+# - small files go to gitleaks in parallel shards (hardlinks, no copies); files over SMALL_MAX, where gitleaks crawls on
+#   one huge line, go to ripgrep with the high-signal key shapes, which reads a 50 MB line in milliseconds
+SMALL_MAX = 2 * 1024 * 1024
+SHARDS = 4
+CLEAN_BLOBS = os.path.expanduser("~/.cache/siso-estate/clean-blobs.txt")
+KEY_SHAPES = (r"AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{60,}|"
+              r"sk-(ant-|proj-)?[A-Za-z0-9_-]{32,}|sk_live_[0-9A-Za-z]{20,}|rk_live_[0-9A-Za-z]{20,}|xox[baprs]-[0-9A-Za-z-]{10,}|"
+              r"AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----|glpat-[0-9A-Za-z_-]{20}|"
+              r"(postgres|mysql|mongodb(\+srv)?)://[^:/\s]+:[^@/\s]{6,}@")
+
+
+def _clean_blobs():
+    return set(open(CLEAN_BLOBS).read().split()) if os.path.exists(CLEAN_BLOBS) else set()
+
+
+def _gitleaks_dir(path, cfg):
     fd, rep = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     try:
-        sh("gitleaks", "git", path, "--config", leaks_config(path), "--log-opts", rng, "--redact", "--no-banner", "--report-format", "json",
-           "--report-path", rep, timeout=1800)
+        code, _, err = sh("gitleaks", "dir", path, "--config", cfg, "--redact", "--no-banner", "--report-format", "json",
+                          "--report-path", rep, "--exit-code", "1", timeout=3600)
+        if code not in (0, 1):  # a scan that did not finish is not a clean scan
+            raise SystemExit(f"secret scan failed (exit {code}): {err[-300:]}")
+        return [os.path.relpath(x["File"], path) for x in json.load(open(rep))] if code == 1 else []
+    finally:
+        if os.path.exists(rep):
+            os.unlink(rep)
+
+
+def flagged_files(path, rng="HEAD"):
+    """Tracked files with a secret in them; [] means clean. Raises if any part of the scan did not finish."""
+    if rng != "HEAD":
+        return _flagged_history(path, rng)
+    _, out, _ = git(path, "ls-files", "-s", "-z")
+    clean = _clean_blobs()
+    todo = {}  # file -> blob
+    for ent in out.split("\0"):
+        if ent and not ent.startswith("160000"):
+            meta, f = ent.split("\t", 1)
+            blob = meta.split()[1]
+            if blob not in clean and os.path.isfile(os.path.join(path, f)):
+                todo[f] = blob
+    small = [f for f in todo if os.path.getsize(os.path.join(path, f)) <= SMALL_MAX]
+    big = [f for f in todo if f not in set(small)]
+    flagged, cfg = set(), leaks_config(path)
+    root = tempfile.mkdtemp(prefix=".scan-", dir=os.path.dirname(path.rstrip("/")))  # same volume: hardlinks work
+    try:
+        shards = []
+        for i in range(SHARDS):
+            d = os.path.join(root, str(i))
+            for f in small[i::SHARDS]:
+                os.makedirs(os.path.join(d, os.path.dirname(f)), exist_ok=True)
+                os.link(os.path.join(path, f), os.path.join(d, f))
+            if os.path.isdir(d):
+                shards.append(d)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(SHARDS) as ex:
+            for found in ex.map(lambda d: _gitleaks_dir(d, cfg), shards):
+                flagged.update(found)
+    finally:
+        shutil.rmtree(root)  # only the extra hardlink names: every file stays in the house
+    for i in range(0, len(big), 200):
+        code, out, err = sh("rg", "-l", "-a", "--no-messages", "--no-ignore", "-e", KEY_SHAPES, "--",
+                            *big[i:i + 200], cwd=path, timeout=3600)
+        if code not in (0, 1):
+            raise SystemExit(f"secret scan failed on big files (exit {code}): {err[-300:]}")
+        flagged.update(x for x in out.splitlines() if x)
+    os.makedirs(os.path.dirname(CLEAN_BLOBS), exist_ok=True)
+    with open(CLEAN_BLOBS, "a") as fh:
+        fh.writelines(b + "\n" for f, b in todo.items() if f not in flagged)
+    return sorted(flagged)
+
+
+def _flagged_history(path, rng):
+    fd, rep = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    try:
+        code, _, err = sh("gitleaks", "git", path, "--config", leaks_config(path), "--log-opts", rng, "--redact", "--no-banner",
+                          "--report-format", "json", "--report-path", rep, "--exit-code", "1", timeout=7200)
+        if code not in (0, 1):  # a scan that did not finish is not a clean scan
+            raise SystemExit(f"secret scan failed on {rel(path)} (exit {code}): {err[-300:]}")
         return sorted({x["File"] for x in json.load(open(rep))})
     finally:
-        os.unlink(rep)
+        if os.path.exists(rep):
+            os.unlink(rep)
 
 
-def park_flagged(folder, env):
+def park_flagged(folder, env, files=None):
     """Files the secret scan flags: copied to the credentials store at their map path, ignored by the house, and
     dropped from its first commit (which was never pushed). Nothing is lost; nothing secret reaches GitHub."""
-    files = flagged_files(folder)
+    files = flagged_files(folder) if files is None else files
     for f in files:
         src = os.path.join(folder, f)
         dst = os.path.join(CRED, rel(src))
@@ -243,7 +323,7 @@ def room(folder):
     return need
 
 
-def rebatch(folder, env):
+def rebatch(folder, env, base=None):
     """A house over BATCH bytes becomes a chain of commits of at most ~BATCH each, whose last tree is exactly the
     scanned single commit's tree (so the scan still covers every file). Returns the commits in push order, or None."""
     _, lst, _ = git(folder, "ls-tree", "-r", "-l", "-z", "HEAD")
@@ -268,7 +348,7 @@ def rebatch(folder, env):
     tmpd = tempfile.mkdtemp(prefix="estate-rebatch-")
     try:
         ienv = dict(env, GIT_INDEX_FILE=os.path.join(tmpd, "index"))
-        parent, chain = None, []
+        parent, chain = base, []
         for i, g in enumerate(groups, 1):
             info = "".join(f"{m} {s}\t{p}\n" for m, s, _, p in g)
             subprocess.run(["git", "-C", folder, "update-index", "--add", "--index-info"], input=info, text=True,
@@ -286,9 +366,36 @@ def rebatch(folder, env):
         shutil.rmtree(tmpd, ignore_errors=True)
 
 
+def push_chain(folder, batches):
+    """Push a rebatched chain one commit at a time; a batch that times out is retried (408s on slow uploads)."""
+    for sha in batches or []:  # GitHub refuses one push over 2 GB: send the house a batch at a time
+        for attempt in range(4):
+            code, _, err = git(folder, "push", "-q", "origin", f"{sha}:refs/heads/main", timeout=7200)
+            if not code:
+                break
+        if code:
+            raise SystemExit(f"push of batch {sha[:12]} failed: {err[-300:]}")
+    if batches:
+        git(folder, "branch", "-q", "--set-upstream-to=origin/main", "main")
+
+
+def resume(folder):
+    """Finish a house whose GitHub repo exists but whose batched push stopped: rebatch HEAD's tree and push the rest."""
+    env = dict(os.environ, GIT_AUTHOR_NAME="siso-estate", GIT_AUTHOR_EMAIL="estate@siso.local",
+               GIT_COMMITTER_NAME="siso-estate", GIT_COMMITTER_EMAIL="estate@siso.local")
+    git(folder, "fetch", "-q", "origin", "main", timeout=3600)  # batches already on GitHub stay; the new chain goes on top
+    code, base, _ = git(folder, "rev-parse", "-q", "--verify", "FETCH_HEAD")
+    push_chain(folder, rebatch(folder, env, base if code == 0 else None) or ["HEAD"])
+    _, head, _ = git(folder, "rev-parse", "HEAD")
+    _, remote, _ = git(folder, "ls-remote", "origin", "refs/heads/main")
+    ok = bool(remote) and remote.split()[0] == head
+    print(json.dumps({"act": "resume", "path": rel(folder), "head": head, "verified": ok}))
+    return ok
+
+
 def house(folder, name, why, park=False):
     folder = os.path.abspath(folder)
-    if HALO.search(folder + "/"):
+    if HALO.search(folder + "/") and not os.environ.get("ESTATE_HALO_OK"):  # Shaan 17 Oct: SISO is HALO's main dev; private sisodias repos, moved to the HALO org at the monorepo step
         raise SystemExit("refused: HALO path (HALO code is never copied off Cam's repo)")
     if os.path.exists(os.path.join(folder, ".git")):
         _, n, _ = git(folder, "rev-list", "--count", "--all")
@@ -323,25 +430,21 @@ def house(folder, name, why, park=False):
                GIT_COMMITTER_NAME="siso-estate", GIT_COMMITTER_EMAIL="estate@siso.local")
     git(folder, "commit", "-q", "-m", f"house: {rel(folder)} as its own repo ({DATE})\n\n{why}", env=env, check=True)
     parked = []
-    if scan_commits(folder, "HEAD") != 0:
+    flagged = flagged_files(folder)  # one scan gives both the verdict and the files (it was scanned twice)
+    if flagged:
         if not park:
             raise SystemExit(f"held: the secret scan flagged {rel(folder)}; the local repo stays, nothing was pushed "
                              f"(gitleaks git {folder} --log-opts HEAD; rerun with --park-secrets to keep those files in the "
                              f"credentials store instead of the repo)")
-        parked = park_flagged(folder, env)
-        if scan_commits(folder, "HEAD") != 0:
+        parked = park_flagged(folder, env, flagged)
+        if flagged_files(folder):  # clean blobs are cached: only what parking changed is read again
             raise SystemExit(f"held: still flagged after parking {len(parked)} files in {rel(folder)}")
     batches = rebatch(folder, env)
     code, out, err = sh("gh", "repo", "create", f"{OWNER}/{name}", "--private", "--source", folder, "--remote", "origin",
                         *([] if batches else ["--push"]), "--description", f"{rel(folder)} (SISO estate house, {DATE})")
     if code:
         raise SystemExit(f"gh repo create failed: {err[-300:]}")
-    for sha in batches or []:  # GitHub refuses one push over 2 GB: send the house a batch at a time
-        code, _, err = git(folder, "push", "-q", "origin", f"{sha}:refs/heads/main", timeout=7200)
-        if code:
-            raise SystemExit(f"push of batch {sha[:12]} failed: {err[-300:]}")
-    if batches:
-        git(folder, "branch", "-q", "--set-upstream-to=origin/main", "main")
+    push_chain(folder, batches)
     _, head, _ = git(folder, "rev-parse", "HEAD")
     _, remote, _ = git(folder, "ls-remote", "origin", "refs/heads/main")
     ok = remote.split()[0] == head if remote else False
@@ -608,7 +711,7 @@ def log(rec):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["keys", "house", "sync", "retire"])
+    ap.add_argument("cmd", choices=["keys", "house", "resume", "sync", "retire"])
     ap.add_argument("folders", nargs="+")
     ap.add_argument("--repo")
     ap.add_argument("--why", default="")
@@ -626,6 +729,8 @@ def main():
             print(f, save_keys(f))
         elif a.cmd == "house":
             ok &= bool(house(f, a.repo, a.why, a.park_secrets))
+        elif a.cmd == "resume":
+            ok &= resume(f)
         elif a.cmd == "sync":
             for r in sync(f, a.why, a.commits_only, a.merge, not a.no_walk):
                 print(json.dumps(r)[:400])

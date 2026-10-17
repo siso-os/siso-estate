@@ -1,7 +1,41 @@
 """Descriptor-anchored, no-follow source file access for backup producers."""
+import errno
 import os
+import sys
+import threading
 from pathlib import Path, PurePosixPath
 import stat
+
+
+OPEN_TIMEOUT = 45
+
+
+def _open(name, flags, dir_fd=None, label=None):
+    """os.open that cannot hang a backup lane: a stalled open (cloud placeholder, dead mount,
+    protected path) is abandoned after OPEN_TIMEOUT s, named on stderr, and surfaces as ETIMEDOUT."""
+    box = {}
+    abandoned = threading.Event()
+
+    def run():
+        try:
+            fd = os.open(name, flags) if dir_fd is None else os.open(name, flags, dir_fd=dir_fd)
+        except BaseException as error:  # noqa: BLE001 - handed back to the caller
+            box["error"] = error
+            return
+        if abandoned.is_set():
+            os.close(fd)
+        else:
+            box["fd"] = fd
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(OPEN_TIMEOUT)
+    if worker.is_alive():
+        abandoned.set()
+        print(f"safe_source: open stalled >{OPEN_TIMEOUT}s: {label or name}", file=sys.stderr, flush=True)
+        raise OSError(errno.ETIMEDOUT, "source open stalled", label or name)
+    if "error" in box:
+        raise box["error"]
+    return box["fd"]
 
 
 def identity(value):
@@ -23,7 +57,7 @@ def _open_directory(path):
         for component in absolute.parts[1:]:
             if component in ("", ".", ".."):
                 raise ValueError("unsafe source root")
-            next_fd = os.open(component, flags, dir_fd=current)
+            next_fd = _open(component, flags, current, str(absolute))
             os.close(current)
             current = next_fd
         if not stat.S_ISDIR(os.fstat(current).st_mode):
@@ -57,11 +91,12 @@ def open_source(root, relative, expected_identity=None, expected_root_identity=N
             raise RuntimeError("source root identity changed")
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         for component in parts[:-1]:
-            next_fd = os.open(component, flags, dir_fd=directory)
+            next_fd = _open(component, flags, directory, f"{root}/{relative}")
             os.close(directory)
             directory = next_fd
-        file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(parts[-1], file_flags, dir_fd=directory)
+        # O_NONBLOCK: a FIFO swapped in for a regular file must fail the S_ISREG check, not hang the lane in open().
+        file_flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        fd = _open(parts[-1], file_flags, directory, f"{root}/{relative}")
         opened = os.fstat(fd)
         if not stat.S_ISREG(opened.st_mode):
             os.close(fd)

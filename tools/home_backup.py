@@ -94,20 +94,32 @@ def make_plane(run, shard):
 def ensure_plane(run, shard):
     plane = make_plane(run, shard)
     owner, repo, _ = backup.dm.github(plane['backend'], write=True)
-    code, output, _ = backup.sh('gh', 'api', f'repos/{owner}/{repo}')
-    if code:
-        code, output, _ = backup.sh('gh', 'api', 'orgs/siso-data/repos', '-X', 'POST',
-                                  '-f', 'name=' + repo, '-F', 'private=true',
-                                  '-f', 'description=Encrypted laptop preservation; immutable verified snapshots')
+    known_path = run / 'known-shards.json'
+    try:
+        known = json.loads(known_path.read_text())
+    except (OSError, ValueError):
+        known = {}
+    if plane['name'] not in known:
+        # REST core quota is 5,000/hour: one existence, identity and reader check per shard per run
+        # is cached; rate limits wait for the reset inside gh_rest; "already exists" is not fatal.
+        code, output, _ = backup.gh_rest('api', f'repos/{owner}/{repo}', tries=1)
         if code:
-            raise RuntimeError('private home shard creation failed')
-    info = json.loads(output)
-    if info.get('private') is not True or info.get('full_name', '').lower() != f'{owner}/{repo}'.lower():
-        raise RuntimeError('home shard identity or privacy differs')
-    code, _, _ = backup.sh('gh', 'api', f'orgs/siso-data/teams/shaan-private-data-readers/repos/{owner}/{repo}',
-                          '-X', 'PUT', '-f', 'permission=pull')
-    if code:
-        raise RuntimeError('private home shard reader binding failed')
+            code, output, err = backup.gh_rest('api', 'orgs/siso-data/repos', '-X', 'POST',
+                                               '-f', 'name=' + repo, '-F', 'private=true',
+                                               '-f', 'description=Encrypted laptop preservation; immutable verified snapshots')
+            if code and 'already exists' in (err + output).lower():
+                code, output, _ = backup.gh_rest('api', f'repos/{owner}/{repo}')
+            if code:
+                raise RuntimeError('private home shard creation failed')
+        info = json.loads(output)
+        if info.get('private') is not True or info.get('full_name', '').lower() != f'{owner}/{repo}'.lower():
+            raise RuntimeError('home shard identity or privacy differs')
+        code, _, _ = backup.gh_rest('api', f'orgs/siso-data/teams/shaan-private-data-readers/repos/{owner}/{repo}',
+                                    '-X', 'PUT', '-f', 'permission=pull')
+        if code:
+            raise RuntimeError('private home shard reader binding failed')
+        known[plane['name']] = time.time()
+        atomic_json(known_path, known)
     # The shared transport checks actual teams, direct collaborators and org policy again.
     path = Path(backup.REPO) / 'plan/data-planes.json'
     with (run / 'plane-register.lock').open('a') as lock:
@@ -436,6 +448,32 @@ def upload_refetch_members(run, db, plane):
     return value
 
 
+SNAPSHOT_HOLD = 'streamed source identity could not be captured safely'
+BOUNDARY_HOLD = ('streaming source escaped declared roots, entered an excluded or protected boundary, '
+                 'or used a linked path')
+
+
+def quarantine_unsnapshottable(db, plane, batch, batch_sizes, reason=SNAPSHOT_HOLD):
+    """Probe each file of a held batch; record the ones the guard refuses so the lane keeps going.
+    The guards themselves are unchanged: refused files are simply not uploaded."""
+    root = backup.root_of(plane)
+    bad = []
+    for path in batch:
+        try:
+            if reason == BOUNDARY_HOLD:
+                if not backup._stream_source_boundary(plane, [path]):
+                    raise ValueError('boundary refused')
+            else:
+                backup.safe_source.snapshot(Path(root).resolve(strict=True), [os.path.relpath(path, root).replace(os.sep, '/')])
+        except (OSError, RuntimeError, ValueError):
+            bad.append(path)
+            db.execute('INSERT OR REPLACE INTO coverage(path,status,source_bytes,note) VALUES (?,?,?,?)',
+                       (path, 'unreadable-or-vanished', batch_sizes.get(path), 'guard refused; rescan required'))
+            db.execute('INSERT OR IGNORE INTO retries VALUES (?,?,?)', (path, 1, time.time() + 3600))
+    db.commit()
+    return bad
+
+
 def run_batches(run, max_batches, lanes=None, worker=None, max_streams=1):
     TRANSPORT.max_streams = max_streams
     TRANSPORT.worker = worker
@@ -494,6 +532,16 @@ def run_batches(run, max_batches, lanes=None, worker=None, max_streams=1):
                                                  on_producer_state=capture_state, on_verified_files=verified.extend)
                     if result.get('status') == 'held' and (run / 'stop-after-batch').exists():
                         return
+                    if result.get('status') == 'held' and result.get('held_reason') in (SNAPSHOT_HOLD, BOUNDARY_HOLD):
+                        bad = quarantine_unsnapshottable(db, plane, batch, batch_sizes, result['held_reason'])
+                        if bad:
+                            atomic_json(run / 'last-batch-error.json', {'run_id': run_id, 'type': 'SnapshotHold',
+                                                                      'message': result['held_reason'], 'quarantined': bad})
+                            summary(db, run)
+                            if lane != '@retry':
+                                iterator = candidates(inventory, db, run, lane, cursor['path'] if cursor else '')
+                                exhausted = False
+                            continue
                     if result.get('status') == 'held':
                         if result.get('status') != 'pushed':
                             atomic_json(run / 'backup-hold.json', result)
