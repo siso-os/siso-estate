@@ -33,6 +33,13 @@ RECEIPTS = os.environ.get("ESTATE_RECEIPTS") or record_path(REPO, "machines", MA
 HOLD_GIB = 15
 
 
+def tool_environment():
+    """launchd has a minimal PATH; preservation tools also need Homebrew/user CLIs."""
+    paths = ['/opt/homebrew/bin', os.path.join(HOME, '.local/bin'), *os.environ.get('PATH', '').split(':'),
+             '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+    return dict(os.environ, ESTATE_MACHINE=MACHINE, PATH=':'.join(dict.fromkeys(p for p in paths if p)))
+
+
 def sh(*a, timeout=120):
     try:
         return subprocess.run(a, capture_output=True, text=True, timeout=timeout).stdout
@@ -402,7 +409,7 @@ def main():
             idle_hours = 0
         tool_free_before = free_kib()
         try:
-            result = subprocess.run([sys.executable, os.path.join(HERE, tool), *flags, "--idle-hours", str(idle_hours), *(["--run"] if a.run else [])], capture_output=True, text=True, timeout=1800, env=dict(os.environ, ESTATE_MACHINE=MACHINE))
+            result = subprocess.run([sys.executable, os.path.join(HERE, tool), *flags, "--idle-hours", str(idle_hours), *(["--run"] if a.run else [])], capture_output=True, text=True, timeout=1800, env=tool_environment())
             out = result.stdout or ""
             if result.stderr:
                 print("  %s stderr: %s" % (rule["id"], result.stderr.strip()[-500:]))

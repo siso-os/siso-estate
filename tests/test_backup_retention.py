@@ -1,5 +1,6 @@
 """Synthetic Git remotes only: generations, failed replacements, and scan gates."""
 import os
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -117,6 +118,7 @@ class Retention(unittest.TestCase):
             self.assertEqual(result["status"], expected, result)
             self.assertFalse(held.call_args.args[5])
             self.assertEqual(self.pushes, [])
+            self.scan.assert_not_called()
 
     def test_recovery_fixture_is_skipped_but_real_source_is_not(self):
         row = {"path": backup.HOME + "/SISO_Workspace/_data/siso-ci-work/tmp/ccrec-fixture/repo"}
@@ -136,6 +138,42 @@ class Retention(unittest.TestCase):
             self.assertEqual(out, str(self.repo.resolve()))
         finally:
             os.chdir(old)
+
+    def test_renamed_owned_repository_uses_its_canonical_private_destination(self):
+        with patch.object(backup, "_GITHUB_ALIASES", {}), \
+                patch.object(backup, "sh", return_value=(0, "HALO-AGENCY/halo\ttrue", "")) as api:
+            self.assertEqual(backup.resolve_github("HALO-AGENCY", "halo-streaming", {}), ("HALO-AGENCY/halo", "PRIVATE"))
+            self.assertEqual(backup.resolve_github("HALO-AGENCY", "halo-streaming", {}), ("HALO-AGENCY/halo", "PRIVATE"))
+            self.assertEqual(api.call_count, 1)
+        for response in ((1, "", "not found"), (0, "foreign/private\ttrue", "")):
+            with patch.object(backup, "_GITHUB_ALIASES", {}), patch.object(backup, "sh", return_value=response):
+                self.assertEqual(backup.resolve_github("HALO-AGENCY", "gone", {}), (None, None))
+
+    def test_resume_keeps_completed_receipts_and_retries_latest_unsafe_result(self):
+        records = self.root / "records"
+        records.mkdir()
+        items = [{"path": p, "action": "own-private"} for p in ("/done", "/retry")]
+        (records / "backup-plan.json").write_text(json.dumps({"items": items}))
+        rows = [{"path": "/done", "status": "pushed", "remote_verified": True},
+                {"path": "/retry", "status": "pushed"},
+                {"path": "/retry", "status": "held", "held_copy": {"status": "error"}}]
+        (records / "backup.log").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        with patch.object(backup, "record_path", side_effect=lambda repo, *parts: str(records / parts[-1])), \
+                patch.object(backup, "TIPS_FILE", str(records / "tips.json")), \
+                patch.object(backup, "load_tips"), \
+                patch.object(backup, "run_item", return_value={"path": "/retry", "status": "pushed"}) as execute:
+            self.assertEqual(backup.run("fixture", None, 1, False, resume=True), 0)
+        self.assertEqual(execute.call_count, 1)
+        summary = json.loads((records / "backup.json").read_text())
+        self.assertEqual({r["path"] for r in summary["results"]}, {"/done", "/retry"})
+
+    def test_metadata_is_bounded_but_transport_keeps_its_explicit_budget(self):
+        with patch.object(backup, "sh", return_value=(0, "", "")) as shell:
+            self.real_git("/fixture", "rev-parse", "HEAD")
+            self.assertEqual(shell.call_args.kwargs["timeout"], 30)
+            self.assertIn("--no-optional-locks", shell.call_args.args[0])
+            self.real_git("/fixture", "push", "origin", "main", timeout=3600)
+            self.assertEqual(shell.call_args.kwargs["timeout"], 3600)
 
 
 if __name__ == "__main__":

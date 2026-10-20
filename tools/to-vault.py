@@ -46,7 +46,8 @@ def newest(p):
         return None
     # a fetch, a remote ref or an estate pin is not work; a commit, checkout or edit is (HEAD, logs/HEAD, index, files)
     skip = []
-    for pat in ("*/.git/objects", "*/.git/index", "*/.git/refs/remotes", "*/.git/refs/estate-kept", "*/.git/logs/refs/remotes"):
+    for pat in ("*/.git/objects", "*/.git/index", "*/.git/refs/remotes", "*/.git/refs/estate-kept", "*/.git/logs/refs/remotes",
+                "*/.git/refs/heads/estate/wip-*", "*/.git/logs/refs/heads/estate/wip-*"):
         skip += ["-path", pat, "-prune", "-o"]
     hot = run("find", p, *skip, "-type", "f", "-mmin", "-%d" % (HOT_HOURS * 60), "-not", "-name", "FETCH_HEAD",
               "-print", "-quit").stdout.strip()
