@@ -41,7 +41,9 @@ critical() {
 # actual Git state. Do not re-walk multi-terabyte data payloads before backing up.
 if critical estate_python tools/inventory.py --known --git-timeout 5 --no-sizes --machine "$M" ${ESTATE_ROOTS:+--roots $ESTATE_ROOTS}; then
   if critical estate_python tools/backup.py plan --machine "$M"; then
-    critical estate_python tools/backup.py run --machine "$M" --jobs 4 --create-repos
+    # Inventory can contain detached build trees. Keep unknown sources in the
+    # existing encrypted data plane instead of creating a GitHub product per tree.
+    critical estate_python tools/backup.py run --machine "$M" --jobs 4
   fi
 fi
 # a checkout held by the secret scan is backed up age-encrypted (held_copy); one with no good copy is loud: console card

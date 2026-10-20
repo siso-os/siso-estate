@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Retire verified, idle CI clones while preserving work and recovery evidence."""
+"""Retire verified idle CI clones; seal recovery evidence on the vault under their worker lease."""
 import argparse
 import fcntl
 import importlib.util
@@ -11,11 +11,38 @@ import subprocess
 import time
 
 
+def stash_free(path):
+    result = subprocess.run(['git', '-C', str(path), 'stash', 'list', '--format=%H'], capture_output=True, text=True)
+    return result.returncode == 0 and not result.stdout.strip()
+
+
+def vault_clone(clone, lock, retention, machine, idle_hours=24):
+    with lock.open('a') as lease:
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        commands = retention.running_commands()
+        if commands is None or str(clone) in commands:
+            return False
+        result = subprocess.run([os.sys.executable, str(Path(__file__).with_name('to-vault.py')), str(clone),
+                                 '--cold-clones', '--idle-hours', str(idle_hours), '--run'], capture_output=True, text=True,
+                                env=dict(os.environ, ESTATE_MACHINE=machine))
+        released = result.returncode == 0 and not clone.exists()
+        print('ci-retire: vault %s; preservation exit %d' % ('released' if released else 'held', result.returncode), flush=True)
+        for line in (result.stdout or '').splitlines()[-2:]:
+            print('  ' + line, flush=True)
+        return released
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--idle-hours', type=float, default=24)
+    ap.add_argument('--vault-max', type=int, default=2, help='bound long verified vault copies per hourly run')
     ap.add_argument('--run', action='store_true')
-    a = ap.parse_args()
+    args = ap.parse_args()
+    if args.idle_hours < 0 or args.vault_max < 0:
+        ap.error('idle hours and vault maximum must be nonnegative')
     root = Path(__file__).resolve().parents[3]
     source = root / 'agents/harness/ci/retention.py'
     if not source.is_file():
@@ -30,52 +57,24 @@ def main():
         return 0
     machine = os.environ.get('ESTATE_MACHINE') or ('mini' if 'mini' in socket.gethostname().lower() else 'laptop')
     before = shutil.disk_usage(work).free
-    removed = retention.prune(work, floor_gib=60 if machine == 'mini' else 100,
-                              margin_gib=0, days=a.idle_hours / 24, dry_run=not a.run, pnpm=True)
-    # Older CI jobs rewrote bytecode that the imported source tracked. Preserve
-    # those exact snapshots through houses.py before releasing the warm clone;
-    # every other dirty clone remains its owner's work.
-    floor = 60 if machine == 'mini' else 100
-    if a.run:
+    target = 60 if machine == 'mini' else 100
+    removed = retention.prune(work, floor_gib=target, margin_gib=0, days=args.idle_hours / 24,
+                              dry_run=not args.run, pnpm=True,
+                              safe_fn=lambda path: stash_free(path) and retention.preserved_clone(path))
+    copied = 0
+    if args.run:
         for clone, lock in retention.units(work):
-            if shutil.disk_usage(work).free >= floor * 2**30:
+            if copied >= args.vault_max or shutil.disk_usage(work).free >= target * 2**30:
                 break
-            if '/clones/sisodias/' not in str(clone) or not (clone / '.git').is_dir() or time.time() - retention.last_used(clone) < a.idle_hours * 3600:
+            if not any('/clones/' + owner + '/' in str(clone) for owner in ('sisodias', 'HALO-AGENCY')):
                 continue
-            status = subprocess.run(['git', '-C', str(clone), 'status', '--porcelain', '-z'], capture_output=True, text=True)
-            changes = [item for item in status.stdout.split('\0') if item]
-            if status.returncode or not changes or any(item[:3] != ' M ' or not item[3:].endswith('.pyc') for item in changes):
+            if not (clone / '.git').is_dir() or time.time() - retention.last_used(clone) < args.idle_hours * 3600:
                 continue
-            ignored = subprocess.run(['git', '-C', str(clone), 'ls-files', '--others', '--ignored', '--exclude-standard', '-z'], capture_output=True, text=True)
-            rebuild = {'node_modules', 'dist', 'build', 'target', '.next', '.turbo', '__pycache__', '.pytest_cache'}
-            if ignored.returncode or any(not any(part in rebuild for part in name.split('/')) for name in ignored.stdout.split('\0') if name):
-                print('ci-retire: held generated-bytecode clone with ignored recovery evidence')
-                continue
-            generated = True
-            for item in changes:
-                cache = clone / item[3:]
-                source_py = cache.parent.parent / (cache.name.split('.cpython-', 1)[0] + '.py')
-                with cache.open('rb') as f:
-                    if f.read(4) != importlib.util.MAGIC_NUMBER or not source_py.is_file():
-                        generated = False
-            if not generated:
-                continue
-            with lock.open('a') as lease:
-                try:
-                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    continue
-                commands = retention.running_commands()
-                if commands is None or str(clone) in commands:
-                    continue
-                result = subprocess.run([os.sys.executable, str(Path(__file__).with_name('houses.py')), 'retire', str(clone), '--run', '--why', 'idle CI clone: tracked generated bytecode preserved before release'],
-                                        capture_output=True, text=True, timeout=900, env=dict(os.environ, ESTATE_MACHINE=machine))
-                released = not (clone / '.git').exists()
-                print('ci-retire: generated-bytecode clone %s; preservation exit %d' % ('released' if released else 'held', result.returncode))
-                if released:
-                    removed.append(str(clone))
+            if vault_clone(clone, lock, retention, machine, args.idle_hours):
+                copied += 1
+                removed.append(str(clone))
     after = shutil.disk_usage(work).free
-    print('ci-retire: %d verified clones; free gain %+.2f GiB' % (len(removed), (after-before)/2**30))
+    print('ci-retire: %d verified clones; free gain %+.2f GiB' % (len(removed), (after - before) / 2**30), flush=True)
     return 0
 
 
