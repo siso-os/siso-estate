@@ -16,7 +16,7 @@ if [ ! -e "$MAIN/.git" ]; then
 fi
 "$MAIN/bin/siso" sync
 "$MAIN/bin/siso" live
-[ -x "$LIVE/estate/core/bin/estate" ] || { echo 'estate/core must be admitted in .siso/live'; exit 1; }
+[ -x "$LIVE/ops/estate/core/bin/estate" ] || { echo 'ops/estate/core must be admitted in .siso/live'; exit 1; }
 grep -q "ESTATE_MACHINE=" "$HOME/.profile" 2>/dev/null || echo "export ESTATE_MACHINE=$M" >> "$HOME/.profile"
 BIN=$HOME/.local/bin
 mkdir -p "$BIN" "$WS/_data/estate/runtime/machines/$M"
@@ -30,6 +30,6 @@ if [ "$#" -gt 0 ]; then
 fi
 if [ "$(uname)" = Linux ]; then
   ( crontab -l 2>/dev/null | grep -v estate-nightly || true
-    echo "30 3 * * * ESTATE_MACHINE=$M $LIVE/estate/core/bin/estate-nightly" ) | crontab -
+    echo "30 3 * * * ESTATE_MACHINE=$M $LIVE/ops/estate/core/bin/estate-nightly" ) | crontab -
 fi
-echo "estate installed for $M from $LIVE/estate/core; export ESTATE_MACHINE=$M on this machine"
+echo "estate installed for $M from $LIVE/ops/estate/core; export ESTATE_MACHINE=$M on this machine"

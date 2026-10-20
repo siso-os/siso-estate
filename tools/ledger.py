@@ -57,7 +57,7 @@ BACKED = ("pushed", "bundled", "clean", "nothing-to-push")
 
 def repo_index(repos_json, backup_json=None):
     """{absolute path: repo row} from machines/<m>/repos.json, each row carrying its last nightly backup result
-    (machines/<m>/backup.json: backup.py pushes every branch, stash and edit to estate/<date>/* refs)."""
+    (machines/<m>/backup.json: backup.py pushes every branch, stash and edit to ops/estate/<date>/* refs)."""
     idx = {r["path"]: dict(r) for r in (repos_json or {}).get("repos", []) if r.get("path")}
     for b in (backup_json or {}).get("results", []):
         if b.get("path") in idx:

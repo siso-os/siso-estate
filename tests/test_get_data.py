@@ -30,22 +30,22 @@ class DataBlocks(unittest.TestCase):
                          'sha256': digest, 'parts': [{'name': 'data.tar.zst.aaa', 'size': len(self.payload), 'sha256': digest}],
                          'locations': ['github:siso-data/siso-data-fixture-01'],
                          'pins': {'github:siso-data/siso-data-fixture-01': {'commit': self.sha}}}
-        (self.root / 'data/manifests').mkdir(parents=True)
-        (self.root / 'data/manifests/fixture.json').write_text(json.dumps(self.manifest))
+        (self.root / 'ops/data/manifests').mkdir(parents=True)
+        (self.root / 'ops/data/manifests/fixture.json').write_text(json.dumps(self.manifest))
         self.row = {'block': self.block, 'commit': self.sha, 'size': len(self.payload),
-                    'manifest': 'data/manifests/fixture.json'}
+                    'manifest': 'ops/data/manifests/fixture.json'}
         self.write_index([self.row])
-        (self.root / '.gitmodules').write_text('[submodule "data/fixture/01"]\n\tpath = data/fixture/01\n\turl = https://github.com/siso-data/siso-data-fixture-01.git\n')
+        (self.root / '.gitmodules').write_text('[submodule "ops/data/fixture/01"]\n\tpath = ops/data/fixture/01\n\turl = https://github.com/siso-data/siso-data-fixture-01.git\n')
         self.raw_git('init', '-q')
-        self.raw_git('add', 'data/blocks.json', 'data/manifests/fixture.json', '.gitmodules')
-        self.raw_git('update-index', '--add', '--cacheinfo', '160000,' + self.sha + ',data/fixture/01')
+        self.raw_git('add', 'ops/data/blocks.json', 'ops/data/manifests/fixture.json', '.gitmodules')
+        self.raw_git('update-index', '--add', '--cacheinfo', '160000,' + self.sha + ',ops/data/fixture/01')
         self.raw_git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
 
     def raw_git(self, *args):
         return subprocess.check_output(['git', '-C', str(self.root), *args], env=get.manifest_tool.git_environment(), stderr=subprocess.DEVNULL, text=True).strip()
 
     def write_index(self, rows):
-        (self.root / 'data/blocks.json').write_text(json.dumps({'version': 1, 'blocks': rows}))
+        (self.root / 'ops/data/blocks.json').write_text(json.dumps({'version': 1, 'blocks': rows}))
 
     def test_list_never_initializes_submodules(self):
         with patch.object(get, 'sh', side_effect=AssertionError('network or Git operation')):
@@ -57,10 +57,10 @@ class DataBlocks(unittest.TestCase):
                 get.get_block(self.root, 'unregistered/01')
 
     def test_pin_and_url_must_match_committed_registration(self):
-        self.assertEqual(get.registration(self.root, self.block, self.row), self.root / 'data/fixture/01')
+        self.assertEqual(get.registration(self.root, self.block, self.row), self.root / 'ops/data/fixture/01')
         with self.assertRaises(ValueError):
             get.registration(self.root, self.block, dict(self.row, commit='b' * 40))
-        self.raw_git('config', 'submodule.data/fixture/01.url', 'https://github.com/elsewhere/repo.git')
+        self.raw_git('config', 'submodule.ops/data/fixture/01.url', 'https://github.com/elsewhere/repo.git')
         with self.assertRaises(ValueError):
             get.registration(self.root, self.block, self.row)
 
@@ -70,12 +70,12 @@ class DataBlocks(unittest.TestCase):
             with self.assertRaises(ValueError):
                 get.registry(self.root)
         self.write_index([self.row])
-        (self.root / 'data/fixture').symlink_to(self.root / 'data/manifests', target_is_directory=True)
+        (self.root / 'ops/data/fixture').symlink_to(self.root / 'ops/data/manifests', target_is_directory=True)
         with self.assertRaises(ValueError):
             get.registration(self.root, self.block, self.row)
 
     def test_fetch_is_targeted_and_requires_payload_hashes(self):
-        checkout = self.root / 'data/fixture/01'
+        checkout = self.root / 'ops/data/fixture/01'
         checkout.mkdir(parents=True)
         (checkout / 'data.tar.zst.aaa').write_bytes(self.payload)
         calls = []
@@ -91,11 +91,11 @@ class DataBlocks(unittest.TestCase):
                 patch.object(get.manifest_tool, 'verified_archive', side_effect=AssertionError('unnecessary fallback')):
             result = get.get_block(self.root, self.block)
         self.assertTrue(result['verified'])
-        self.assertIn(('-c', 'submodule.recurse=false', '-c', 'protocol.file.allow=never', 'submodule', 'update', '--init', '--depth', '1', '--', 'data/fixture/01'), calls)
+        self.assertIn(('-c', 'submodule.recurse=false', '-c', 'protocol.file.allow=never', 'submodule', 'update', '--init', '--depth', '1', '--', 'ops/data/fixture/01'), calls)
         self.assertFalse(any('--recursive' in c for c in calls))
 
     def test_corrupt_checkout_needs_successful_fallback(self):
-        checkout = self.root / 'data/fixture/01'
+        checkout = self.root / 'ops/data/fixture/01'
         checkout.mkdir(parents=True)
         (checkout / 'data.tar.zst.aaa').write_bytes(b'bad')
         def fake_git(root, *args):
@@ -108,7 +108,7 @@ class DataBlocks(unittest.TestCase):
             fallback.assert_called_once()
 
     def test_capacity_hold_precedes_submodule_fetch(self):
-        with patch.object(get, 'registration', return_value=self.root / 'data/fixture/01'), \
+        with patch.object(get, 'registration', return_value=self.root / 'ops/data/fixture/01'), \
                 patch.object(get, 'git', return_value=str(self.root / '.git')) as git, \
                 patch.object(get.shutil, 'disk_usage', return_value=SimpleNamespace(free=99_000_000_000)):
             with self.assertRaises(RuntimeError):

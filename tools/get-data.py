@@ -44,7 +44,7 @@ def within(root, relative):
 
 
 def registry(root):
-    index = within(root, 'data/blocks.json')
+    index = within(root, 'ops/data/blocks.json')
     if not index.exists():
         return {}
     document = json.loads(index.read_text())
@@ -63,7 +63,7 @@ def registry(root):
 
 
 def registration(root, block, row):
-    path = 'data/' + block
+    path = 'ops/data/' + block
     within(root, path)
     modules = within(root, '.gitmodules')
     # Never let an uncommitted URL override turn this into an arbitrary fetch.
@@ -109,7 +109,7 @@ def get_block(root, block):
         if shutil.disk_usage(root).free - 3 * row['size'] < RESERVE:
             raise RuntimeError('data fetch held by 100 GB local free-space reserve')
         git(root, '-c', 'submodule.recurse=false', '-c', 'protocol.file.allow=never',
-            'submodule', 'update', '--init', '--depth', '1', '--', 'data/' + block)
+            'submodule', 'update', '--init', '--depth', '1', '--', 'ops/data/' + block)
         if git(checkout, 'rev-parse', 'HEAD') != row['commit']:
             raise ValueError('checked-out data revision differs from pin')
         try:

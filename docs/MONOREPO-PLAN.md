@@ -43,7 +43,7 @@ you can touch anything but Halo"; "their owners aren't working right now, push t
    incident and pass on the fix); files are truth, indexes are caches; forget by proposal into _archive (r7).
 10. Persistent agent = a checked-in identity file + a memory folder (Claude Code `.claude/agents/<n>.md` +
     `memory: project`); tools allowlisted; runtime (queue, mailbox, transcripts) outside git; no OSS tool gives a
-    file-based seat home that re-spawns, so seats/ is ours to build (r8).
+    file-based seat home that re-spawns, so ops/seats/ is ours to build (r8).
 11. Data: GitHub repo <~1-5 GB, files <100 MiB, LFS metered (10 GiB on Pro); GitHub Release assets have no total cap
     (2 GiB/asset, 1,000/release) -> later home for bytes nobody diffs, as age-encrypted 64 MiB chunks (Xet design) with
     only a manifest in git. Not git-crypt (leaks names/sizes, no revoke). Not submodules for pins (accidental pulls) (r9).
@@ -59,16 +59,16 @@ you can touch anything but Halo"; "their owners aren't working right now, push t
     seats tied to terminal panes; absolute gates (a red main blocked 6 seats overnight); too many repos and
     sibling-path imports; counting dead records as live.
 
-## 3. Decisions taken (all live in sisodias/siso decisions/)
+## 3. Decisions taken (all live in sisodias/siso ops/decisions/)
 - 0021 folders by job; 0022 one pnpm+turbo workspace, products -> packages -> nothing, hubs are views.
 - 0023 (17 Oct): every unit is a module with a permanent id (`module.json`: id, kind, summary, owner seat, one
   `layer:` tag, status, depends; `uses` derived from pnpm workspace deps); `bin/siso` where/owner/move/new/index/
   affected/work; `.siso/moves.jsonl` keeps every old path/repo resolvable; generated index in root AGENTS.md;
-  seats/<seat>/ homes (seat.json + AGENTS.md with generated owns block); one generated registry; cone worktrees per
+  ops/seats/<seat>/ homes (seat.json + AGENTS.md with generated owns block); one generated registry; cone worktrees per
   seat; `.siso/baseline.json` ratchet; `bin/check --affected` for quick loops (land stays full: Actions is off).
 - 0024 (17 Oct): data in blocks `siso-data-<family>-<set>-NN` (~1 GB, files <=64 MiB, sealed), families library
   (plain-private) / people / personal / client-<x> / runtime / credentials / archive (age, one key per family),
-  pinned in `data/blocks.json` (not submodules), fetched by `bin/get`; Release-asset chunks later.
+  pinned in `ops/data/blocks.json` (not submodules), fetched by `bin/get`; Release-asset chunks later.
 - Seats are folders, not repos (a repo per agent recreates the sprawl and splits a seat from the code it changes).
 - HALO never enters sisodias/siso; Cam's repo is never copied (ADR 0007).
 
@@ -92,10 +92,10 @@ you can touch anything but Halo"; "their owners aren't working right now, push t
    UI banks, OS = apps/os, agency, library) and archive the superseded repos (blackbox4, agent-zero-protocol,
    memories_v2, project-team-2, social-outreach x2, codex-remote after a security read, siso-ui-library, ui-shoot,
    ui-comps, actionist-components, SISOCRM dup, siso-monorepo, siso-core-clean, bdbt, demo-tool, proof x6).
-5. Seats move in: each seat's HANDOFF.md, memory/, source/, LOOP.md into seats/<seat>/; t3-seats.json and
+5. Seats move in: each seat's HANDOFF.md, memory/, source/, LOOP.md into ops/seats/<seat>/; t3-seats.json and
    registry.json generated from `.siso/generated/seats.json`; seats launch in their cone worktree.
 6. Data: encrypt siso-data-vps-services (WhatsApp DB plain today); declare whatsapp-media, home-keepers,
-   held-backups planes; write data/blocks.json; build bin/get; library transcripts -> 3 blocks, banks -> 4 blocks.
+   held-backups planes; write ops/data/blocks.json; build bin/get; library transcripts -> 3 blocks, banks -> 4 blocks.
 7. Laptop: one monorepo checkout every consumer can point at (decide: ~/SISO_Workspace/siso via layout.json, or
    promote `_data/worktrees/siso/main` to track origin/main); retire the old checkouts with houses.py.
 8. Gardener (nightly, ESTATE loop): regenerate, grade every module (runs, tests, documented commands, owner live,

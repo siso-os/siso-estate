@@ -25,7 +25,7 @@ s6 machines and storage, s7 agents, s8 prior research).
      1.9 GB each (s6).
 
 ## 1. The idea in one line
-**One platform, many branches.** Shared code lives once in `platform/`. Every business unit is a folder in
+**One platform, many branches.** Shared code lives once in `packages/`. Every business unit is a folder in
 `branches/` with the same shape, so a new branch (gaming) is one command. Code moves only one way:
 **branch -> platform, never branch -> branch.** If two branches need something, it is promoted into the platform.
 This is the Backstage domain -> system -> component model (s8 §4) laid onto folders, and it is what keeps 50
@@ -35,8 +35,8 @@ branches as easy to understand as 5.
 ```
 siso/
   AGENTS.md            router <= 100 lines; generated index of branches, modules, owners, checks
-  decisions/           ADRs (0021-0024 kept; 0025 branches + platform; 0026 storage tiers; 0027 seat scale)
-  platform/            used by every branch; nothing here imports a branch
+  ops/decisions/           ADRs (0021-0024 kept; 0025 branches + platform; 0026 storage tiers; 0027 seat scale)
+  packages/            used by every branch; nothing here imports a branch
     ui/                ONE design system: @siso/tokens, @siso/ui, blocks, viewer (absorbs ui-suite,
                        design-system, ui-base legacy, siso-shell bank, @agent-base/tokens)
     site/              site-kit, router worker, cms, booking, edge-auth, analytics
@@ -54,9 +54,9 @@ siso/
     library/           Great Library: knowledge, banks (component, repo, ui), works, foundry, people-graph
     labs/              SISO Labs: incubator. One folder per venture: gaming/, music/, research/, video/...
                        A venture graduates to branches/<venture>/ with `siso move` (ids unchanged)
-  estate/              city hall: estate tool, laptop-health, os-release (exports), siso-ci, guest-gateway
-  seats/<seat>/        agent homes (seat.json gains "branch"); one generated registry
-  data/                manifests only: families, blocks.json, bin/get
+  ops/estate/              city hall: estate tool, laptop-health, os-release (exports), siso-ci, guest-gateway
+  ops/seats/<seat>/        agent homes (seat.json gains "branch"); one generated registry
+  ops/data/                manifests only: families, blocks.json, bin/get
   .siso/               tags, moves.jsonl, baseline, budgets.json, generated/
 ```
 Every branch has the same five doors, so any agent can find its way around any branch cold:
@@ -65,12 +65,12 @@ branches/<b>/
   BRANCH.json          id, name, parent, lead seat, domain (gaming.sisolabs.space), data family,
                        public org (or none), nav group in Agent Base, status (idea|incubating|live|retired)
   AGENTS.md            what the branch is, in Shaan's words; generated list of its modules and seats
-  products/ packs/ site/   its own code (depends on platform/ only)
+  products/ packs/ site/   its own code (depends on packages/ only)
   research/            notes and small text; bulk goes to its data family
 ```
 Rules, all as checks (`bin/check` + `bin/siso index --check`):
 - **Direction:** branches -> platform -> nothing. A branch-to-branch import fails, with the fix in the error message
-  ("promote X into platform/<area>").
+  ("promote X into packages/<area>").
 - **Promotion on second use:** the gardener flags any file that appears identically in 2+ branches (the s2 script
   becomes a check: no new duplicate blob over 256 KB across modules).
 - **One design system:** a second `tokens` or `ui` package name fails the check.
@@ -119,8 +119,8 @@ Every repo (752 live, s3):
 Duplicates inside the monorepo (s2, ranked by bytes):
 1. One OS app: lifelock rolls into siso-internal as a module (2,785 identical files). Shaan: life and lifelock roll
    into the OS.
-2. Notes backend kept once in platform/os-kernel; library/knowledge/app keeps the knowledge app only (1,377 files).
-3. One design system in platform/ui (ui-base legacy copy 398 files, @agent-base/tokens, ui-suite, design-system).
+2. Notes backend kept once in packages/os-kernel; library/knowledge/app keeps the knowledge app only (1,377 files).
+3. One design system in packages/ui (ui-base legacy copy 398 files, @agent-base/tokens, ui-suite, design-system).
 4. Shared assets once (8 copies of one 2.6 MB gif; 13.5 MB of 3D sprites in 3 places).
 5. One landing (agency/hq/landing, landing-mini and agency-landing folded into agency/hq/site).
 6. app-factory's copy of video-hub removed (49 files, 11.4 MB).
@@ -132,10 +132,10 @@ Nothing is deleted: every fold leaves the losing copy's path in moves.jsonl and 
 ## 6. Agents at scale (hundreds of seats)
 - **Hierarchy follows the tree.** Agent Zero sits on the whole repo. Each branch's lead seat is that branch's
   project Agent Zero. Seats own modules inside one branch. Arms (Codex, Haiku) work in a lane.
-- **One registry.** `seats/*/seat.json` is the only hand-written source. `.siso/generated/seats.json` is built from
+- **One registry.** `ops/seats/*/seat.json` is the only hand-written source. `.siso/generated/seats.json` is built from
   it, and `t3-seats.json` is generated too: runtime fields (thread, pane, history) stay in `_data/`, identity in git.
   The 24-vs-19 drift ends.
-- **Ownership rebalanced.** estate keeps estate/ and the tooling (about 10 modules, not 46). Each branch's modules
+- **Ownership rebalanced.** estate keeps ops/estate/ and the tooling (about 10 modules, not 46). Each branch's modules
   go to its lead seat. A module with no live owner rolls up to its branch lead, never to nobody.
 - **Claims, not collisions.** `bin/siso claim <module>` writes a claim through platform/agents/work (who, what,
   until when). A second seat sees the claim and queues behind it.
@@ -159,7 +159,7 @@ Nothing is deleted: every fold leaves the losing copy's path in moves.jsonl and 
 3. **Finish v1, with liveness.** Read every module and mark the ones nobody runs (Orca first) retired. Archive the 16
    imported repos. Import the should-merge repos that are still live. The seats' old repos are archived as each
    seat restarts on root.
-4. **ADR 0025-0027 + the re-lay.** One generated change: `platform/` + `branches/` via `siso move` (ids unchanged;
+4. **ADR 0025-0027 + the re-lay.** One generated change: `packages/` + `branches/` via `siso move` (ids unchanged;
    every old path still resolves). Branch-direction check on. Idea slots for gaming, music, video and research.
 5. **Dedupe** in the order of section 5 (one claim per item, biggest bytes first).
 6. **Storage tiers.** Transfer data repos to SISO-DATA; pack the home shards on the mini's drive; one Release-asset
@@ -187,7 +187,7 @@ Agent Zero with his own tools.
   - `cp -c` of `library/` (351 MB) cost 18 MB of disk.
   - Removing 5 clean, idle 1.9 GB lanes freed 9 GB (19 GB free afterwards). The 2 lanes with uncommitted work were kept.
 **One identity per seat.**
-- `seats/<seat>/seat.json` holds title, branch, route (lead, builder or reader), owns, skills and brief. It is the
+- `ops/seats/<seat>/seat.json` holds title, branch, route (lead, builder or reader), owns, skills and brief. It is the
   only hand-written source.
 - `bin/siso index` generates `.siso/generated/seats.json`. `seat-to-t3` and `seat-fresh-t3` read it.
 - `~/.local/state/agent-base/t3-seats.json` keeps runtime only (thread, pane, at, previous_thread). The 24-vs-19 drift

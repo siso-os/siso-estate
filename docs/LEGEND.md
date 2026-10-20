@@ -108,7 +108,7 @@ to the public packages.
 - It gains a code bank: `_reference/code-references/` and the clones kept for study (principle 6).
 - It loses nothing to copies: the factory uses its banks and keeps none of its own.
 
-**personal, Shaan's life.** Its shape is his life areas: `legal/`, `private/`, `data/`, `goals/`, study
+**personal, Shaan's life.** Its shape is his life areas: `legal/`, `private/`, `ops/data/`, `goals/`, study
 (`team-entrepreneurship/`), `trading-for-dad/` (all three Polymarket homes become one), `math-bounties/`,
 `accounting/`, and `apps/` for his own apps. The folders that copy the estate's shape go:
 - `agents/` holds the court agents, so they move into `legal/`;
