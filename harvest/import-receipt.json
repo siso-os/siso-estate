@@ -1,0 +1,110 @@
+{
+  "schema": "siso-code-only-import/1",
+  "source_repo": "sisodias/siso-harvest",
+  "source_pin": "62fa255eca84880560ab03994c77a20b6113d8e2",
+  "source_ref": "refs/heads/main",
+  "base_commit": "88a5b37a3508e83edfe5db1f1257cd87c6c8a0a9",
+  "module_id": "siso.estate.core",
+  "files": [
+    {
+      "source": "archive-artifacts.py",
+      "source_blob": "27182db64b7b6d6550c2618bc1290baf71a956e8",
+      "source_bytes": 7012,
+      "source_url": "https://github.com/sisodias/siso-harvest/blob/62fa255eca84880560ab03994c77a20b6113d8e2/archive-artifacts.py",
+      "source_mode": "100644",
+      "destination": "estate/core/harvest/archive-artifacts.py",
+      "destination_blob": "27182db64b7b6d6550c2618bc1290baf71a956e8",
+      "destination_sha256": "b1612d9c184820dd14ebcb38cd724abc778cb915dd68276a1c1888126eb1c4b3",
+      "destination_mode": "100644",
+      "disposition": "exact-import"
+    },
+    {
+      "source": "push-rescues.py",
+      "source_blob": "2248d68aedfe6d273655f8a4c6d7aa18d905e5f7",
+      "source_bytes": 1694,
+      "source_url": "https://github.com/sisodias/siso-harvest/blob/62fa255eca84880560ab03994c77a20b6113d8e2/push-rescues.py",
+      "source_mode": "100644",
+      "destination": "estate/core/harvest/push-rescues.py",
+      "destination_blob": "b657378f9040c3be4228f6503db8530a8af96060",
+      "destination_sha256": "21f5728c7e91fb4d7bed290d6b33fac23c1f303c11ff6eed96890cacb409757f",
+      "destination_mode": "100644",
+      "disposition": "adapted-import"
+    },
+    {
+      "source": "sanitize-rescues.py",
+      "source_blob": "0a222d9a6495e3c9303378ff89f315ad9a03bec5",
+      "source_bytes": 4749,
+      "source_url": "https://github.com/sisodias/siso-harvest/blob/62fa255eca84880560ab03994c77a20b6113d8e2/sanitize-rescues.py",
+      "source_mode": "100644",
+      "destination": "estate/core/harvest/sanitize-rescues.py",
+      "destination_blob": "2c56c68f6a8c3b83b8a1e9b8c89ecf17a7b2fe71",
+      "destination_sha256": "e589b18620d9773a0c7874f3920d2c4199af12f923dfec55a61eeec43f1ee0df",
+      "destination_mode": "100644",
+      "disposition": "adapted-import"
+    },
+    {
+      "source": "snapshot.py",
+      "source_blob": "15ae94677ebbbd452bb970567501dee5e2cd0be3",
+      "source_bytes": 10645,
+      "source_url": "https://github.com/sisodias/siso-harvest/blob/62fa255eca84880560ab03994c77a20b6113d8e2/snapshot.py",
+      "source_mode": "100644",
+      "destination": "estate/core/harvest/snapshot.py",
+      "destination_blob": "38c7431d6603cb3a06ac088a9ffbaba06a5ed7dc",
+      "destination_sha256": "49950747c280ef54f8e3305f26c768d4f53ecfeb6bec4cd694edf7dbf4df52e3",
+      "destination_mode": "100644",
+      "disposition": "adapted-import"
+    }
+  ],
+  "allowlist": [
+    "archive-artifacts.py",
+    "push-rescues.py",
+    "sanitize-rescues.py",
+    "snapshot.py"
+  ],
+  "exclusions": "All other source paths and history; corpus, media, manifests, reviews, runtime receipts, logs, credentials, sessions, private/client/HALO payloads. No source retirement.",
+  "external_originals": "/tmp/spine/sol-small-tooling-sources-20261018/siso-harvest",
+  "source_scan": {
+    "tool": "gitleaks dir --redact",
+    "exit_code": 0,
+    "report": "/tmp/spine/sol-small-tooling-source-scan.json"
+  },
+  "acceptance": "Code-only integration candidate. No runtime adoption, real pushes/archives, full corpus, browser or visual acceptance.",
+  "parent_ledger": {
+    "required": "Append code-only snapshot record after integration; do not claim subtree/history import.",
+    "source": "sisodias/siso-harvest",
+    "source_sha": "62fa255eca84880560ab03994c77a20b6113d8e2",
+    "path": "estate/core/harvest",
+    "module_id": "siso.estate.core",
+    "allowlist": [
+      "archive-artifacts.py",
+      "push-rescues.py",
+      "sanitize-rescues.py",
+      "snapshot.py"
+    ],
+    "evidence": "This receipt plus README.md; integrator must record destination commit and run full-checkout catalog/layout/dependency gates.",
+    "import_type": "code-only-allowlist",
+    "history_reachable": false,
+    "subtree_import": false,
+    "originals_retained": true,
+    "checks_requiring_full_checkout": [
+      "bin/siso index --check",
+      "bin/check-layout",
+      "bin/check-deps"
+    ]
+  },
+  "adaptations": [
+    "snapshot: hold if HEAD/index/captured source changes during scan.",
+    "push-rescues: revalidate HEAD and index against scan receipt before push.",
+    "sanitize-rescues: refuse historical Oracle-specific digest exception rather than read obsolete product paths.",
+    "archive-artifacts: unchanged. Historical harvest/2026-10-06 namespace and receipt schemas retained for compatibility."
+  ],
+  "checks": {
+    "synthetic": "python3 test_synthetic.py: pass; fake remote/scanner with real Git objects; scan exit 2/error, exclusion, no push, unchanged owner HEAD/index/files, successful candidate without push, mutation hold",
+    "python_ast": "pass"
+  },
+  "target_scan": {
+    "tool": "gitleaks dir --redact",
+    "exit_code": 0,
+    "outgoing_history": "Required zero exit before branch push; final result reported with destination commit."
+  }
+}

@@ -12,6 +12,9 @@ import argparse, collections, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.join(os.path.expanduser("~"), "SISO_Workspace")
 sys.path.insert(0, HERE)
 from houses import KEYS  # noqa: E402  the one key-file pattern
@@ -96,7 +99,7 @@ def owner_of(path, repos):
 
 def findings_by_repo(machine, repos):
     try:
-        d = json.load(open(os.path.join(REPO, "machines", machine, "dots.json")))
+        d = json.load(open(record_path(REPO, "machines", machine, "dots.json")))
     except (OSError, ValueError):
         return {}, None
     rule_of = {"retired conventions": "no-retired", "tool state tracked in git": "no-tool-state",
@@ -116,7 +119,7 @@ def findings_by_repo(machine, repos):
 
 def backups(machine):
     try:
-        b = json.load(open(os.path.join(REPO, "machines", machine, "backup.json")))
+        b = json.load(open(record_path(REPO, "machines", machine, "backup.json")))
     except (OSError, ValueError):
         return {}, None
     return {os.path.relpath(r["path"], WS): r for r in b.get("results", []) if str(r.get("path", "")).startswith(WS)}, b.get("ran_at")
@@ -243,7 +246,7 @@ def main():
     ap.add_argument("--machine", default=os.environ.get("ESTATE_MACHINE", "laptop"))
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
-    out = os.path.join(REPO, "machines", a.machine, "code.json")
+    out = record_path(REPO, "machines", a.machine, "code.json")
     if a.words:
         want = [w.lower() for w in a.words]
         hits = [r for r in live_repos() if all(w in r.lower() for w in want)]
@@ -265,7 +268,7 @@ def main():
     fell = [x for x in d["results"] if before.get(x["path"]) and not x["up_to_code"]]
     with open(out, "w") as f:
         json.dump(d, f, indent=1)
-    with open(os.path.join(REPO, "machines", a.machine, "code-history.jsonl"), "a") as f:
+    with open(record_path(REPO, "machines", a.machine, "code-history.jsonl"), "a") as f:
         f.write(json.dumps({"at": d["at"], "repos": d["repos"], "up_to_code": d["up_to_code"], "mean_score": d["mean_score"],
                             "failing_by_rule": d["failing_by_rule"], "fell": [x["path"] for x in fell]}) + "\n")
     print(f"building code: {d['up_to_code']} of {d['repos']} live repos up to code; mean score {int(d['mean_score'] * 100)}%"

@@ -13,10 +13,13 @@ import argparse, json, os, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-LOG = os.path.join(REPO, "machines", "disk-watch.jsonl")
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
+LOG = record_path(REPO, "machines", "disk-watch.jsonl")
 # machine: (ssh alias or None for this laptop, filesystem, floor GiB)
 DISKS = {"laptop": (None, "/System/Volumes/Data", 25), "mini": ("mac-mini-herdr", "/System/Volumes/Data", 25),
-         "halo-vps": ("halo-vps", "/", 20), "vps-siso": ("siso-vps", "/", 10)}
+         "halo-vps": ("halo-vps", "/", 20)}  # vps-siso retired 19 Oct
 SOON_DAYS = 3
 
 

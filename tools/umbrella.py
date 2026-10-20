@@ -17,6 +17,9 @@ import argparse, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 GH_URL = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
@@ -48,7 +51,7 @@ def best_url(rec, backup):
 def moved_from(machine):
     """new path prefix -> old path prefix, from moves.jsonl (backups were taken under the old paths)."""
     pairs = []
-    mp = os.path.join(REPO, "machines", machine, "moves.jsonl")
+    mp = record_path(REPO, "machines", machine, "moves.jsonl")
     for line in open(mp) if os.path.exists(mp) else []:
         try:
             m = json.loads(line)
@@ -60,7 +63,7 @@ def moved_from(machine):
 
 def placements(machine):
     """local path -> map path, for repos that live outside ~/SISO_Workspace on this machine (e.g. /opt on a VPS)."""
-    pp = os.path.join(REPO, "machines", machine, "placements.json")
+    pp = record_path(REPO, "machines", machine, "placements.json")
     return json.load(open(pp)).get("placements", {}) if os.path.exists(pp) else {}
 
 
@@ -93,8 +96,12 @@ def github_placements():
     """map path -> sisodias repo for repos no machine checks out (plan/github-placements.json)."""
     gp = os.path.join(REPO, "plan", "github-placements.json")
     pl = json.load(open(gp)).get("placements", {}) if os.path.exists(gp) else {}
+    overlay = record_path(REPO, "plan", "github-placements.json")
+    if overlay != gp and os.path.isfile(overlay):
+        with open(overlay) as f:
+            pl.update(json.load(f).get("placements", {}))
     # a repo deleted from GitHub (folded into the vault, tools/vault.py) leaves the map; its bundle is its record
-    gl = os.path.join(REPO, "machines", "github", "sisodias.json")
+    gl = record_path(REPO, "machines", "github", "sisodias.json")
     live = {r["name"].lower() for r in json.load(open(gl))} if os.path.exists(gl) else None
     if live is None:
         return pl
@@ -118,8 +125,8 @@ def build(machine):
     """This machine's restore rows -> .estate/machines/<machine>.json; then the ONE map for every machine:
     .gitmodules and gitlinks for the union of all machines' top-level repos at their map paths (D7: the same paths
     everywhere; a machine checks out only what it needs, the rest is on GitHub at the same place)."""
-    inv = json.load(open(os.path.join(REPO, "machines", machine, "repos.json")))
-    plan_p = os.path.join(REPO, "machines", machine, "backup-plan.json")
+    inv = json.load(open(record_path(REPO, "machines", machine, "repos.json")))
+    plan_p = record_path(REPO, "machines", machine, "backup-plan.json")
     plan_old = {i["path"]: i for i in json.load(open(plan_p))["items"]} if os.path.exists(plan_p) else {}
     pairs = moved_from(machine)
 
@@ -215,7 +222,7 @@ def overlay_paths(machine):
     """Repos the backup keeps as overlay bundles (public own repos, third-party clones): their local delta lives in the
     private map's .estate/overlays, never on their public remote."""
     try:
-        res = json.load(open(os.path.join(REPO, "machines", machine, "backup.json"))).get("results", [])
+        res = json.load(open(record_path(REPO, "machines", machine, "backup.json"))).get("results", [])
     except (OSError, ValueError):
         return set()
     return {os.path.relpath(r["path"], WS) for r in res if r.get("action") == "overlay" and r.get("path", "").startswith(WS + "/")}
@@ -239,6 +246,14 @@ def mapped_paths():
     .gitmodules line, and from 27 Sep 40 archived checkouts in _archive/ made it skip every repo sorted after them."""
     _, cfg, _ = sh("git", "-C", WS, "config", "-z", "-f", ".gitmodules", "--get-regexp", r"\.path$")
     return [e.split("\n", 1)[1] for e in cfg.split("\0") if "\n" in e]
+
+
+# The map carries git bundles (.estate/overlays): already compressed, so delta search on them is wasted CPU. Agent Zero,
+# 19 Oct: the hourly push ran pack-objects for ~9 min at a load of 25. Files over 1 MB are packed whole.
+CHEAP_PACK = ("-c", "core.bigFileThreshold=1m", "-c", "pack.threads=2")
+# HALO code never leaves Cam's repo (ADR 0007): a bundle of a HALO, Oracle or Kellman checkout is never on the map.
+# 19 Oct: 1.9 GB of them made the hourly push time out (HTTP 408).
+HALO_OVERLAY = re.compile(r"halo|oracle|kellman", re.I)
 
 
 def snapshot(push, machine="laptop"):
@@ -267,6 +282,8 @@ def snapshot(push, machine="laptop"):
         mode, _sha, _stage, rel = line.split(None, 3)
         if mode == "160000" and rel not in mapped:   # index only; `rm --cached` refuses an entry add -A just staged
             sh("git", "-C", WS, "update-index", "--force-remove", "--", rel)
+        elif rel.startswith(".estate/overlays/") and HALO_OVERLAY.search(rel):
+            sh("git", "-C", WS, "update-index", "--force-remove", "--", rel)  # ADR 0007, even if .gitignore loses it
     c, _, err = sh("git", "-C", WS, "commit", "-qm", f"estate snapshot {machine} {time.strftime('%Y-%m-%d %H:%M')}: {n} repos pinned")
     print("committed" if c == 0 else f"nothing to commit ({err[-120:]})")
     if push:
@@ -275,13 +292,13 @@ def snapshot(push, machine="laptop"):
             print("push held: the secret scan flagged the snapshot commit (run gitleaks git ~/SISO_Workspace --log-opts=-1)")
             return
         sh("git", "-C", WS, "config", "http.postBuffer", "524288000")
-        c, _, err = sh("git", "-C", WS, "push", "-q", "origin", "HEAD:main", timeout=3600)
+        c, _, err = sh("git", "-C", WS, *CHEAP_PACK, "push", "-q", "origin", "HEAD:main", timeout=3600)
         if c != 0:  # another machine pushed first: take its records, keep ours (per-machine files never collide)
             r, _, _ = sh("git", "-C", WS, "pull", "-q", "--rebase", "-X", "theirs", "origin", "main", timeout=600)
             r = take_own_pins(r)
             if r != 0:  # never leave the map mid-rebase: on 26 Sep one stuck from 08:35 and every snapshot after it committed on a detached HEAD
                 sh("git", "-C", WS, "rebase", "--abort")
-            c, _, err = sh("git", "-C", WS, "push", "-q", "origin", "HEAD:main", timeout=3600)
+            c, _, err = sh("git", "-C", WS, *CHEAP_PACK, "push", "-q", "origin", "HEAD:main", timeout=3600)
         print("pushed" if c == 0 else "push failed: " + err[-300:])
 
 
@@ -327,7 +344,7 @@ def verify(machine):
         res = list(ex.map(one, links))
     bad = [dict(path=p, sha=s, status=st) for p, s, st in res if st != "ok"]
     out = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "pinned": len(res), "on_github": len(res) - len(bad), "problems": bad}
-    with open(os.path.join(REPO, "machines", machine, "map-verify.json"), "w") as f:
+    with open(record_path(REPO, "machines", machine, "map-verify.json"), "w") as f:
         json.dump(out, f, indent=1)
         f.write("\n")
     print(f"{out['on_github']} of {out['pinned']} pinned commits exist on GitHub" + "".join(f"\n  {b['status']:<10} {b['path']} {b['sha'][:12]}" for b in bad))

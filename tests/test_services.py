@@ -23,6 +23,7 @@ class Services(unittest.TestCase):
             plistlib.dump({"Label": "com.siso.demo", "ProgramArguments": ["/bin/sh", self.prog]}, f)
         json.dump({"services": []}, open(services.MANIFEST, "w"))
         services.loaded = lambda: {"com.siso.demo": (None, "0")}
+        services.REMOTES = {}
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
@@ -57,6 +58,22 @@ class Services(unittest.TestCase):
         self.assertEqual(services.program_of(p), "/Applications/Some App.app")
         p = {"ProgramArguments": ["/bin/bash", "-c", "/Users/x/bin/tool --flag || osascript -e 'x'"]}
         self.assertEqual(services.program_of(p), "/Users/x/bin/tool")
+
+    def test_a_failed_job_on_another_machine_is_drift(self):
+        with redirect_stdout(io.StringIO()):
+            services.adopt("com.siso.demo", "ESTATE", "a demo", True)
+        services.REMOTES = {"mini": "host"}
+        services.remote_loaded = lambda host: {"com.siso.collector": (None, "127"), "com.siso.fine": (None, "0"),
+                                               "com.siso.stopped": (None, "-15"), "com.siso.up": ("42", "1"),
+                                               "com.apple.x": (None, "1")}
+        rc, out = self.run_check()
+        self.assertEqual(rc, 1)
+        self.assertIn("DRIFT mini:com.siso.collector: its last run exited 127", out)
+        self.assertEqual(out.count("DRIFT"), 1)
+        services.remote_loaded = lambda host: None
+        rc, out = self.run_check()
+        self.assertEqual(rc, 0)
+        self.assertIn("mini did not answer", out)
 
 
 if __name__ == "__main__":

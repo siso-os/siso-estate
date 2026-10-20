@@ -13,8 +13,11 @@ import json, os, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
-REGISTER = os.path.join(REPO, "machines", "register.json")
-OUT = os.path.join(REPO, "plan", "render", "index.html")
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
+REGISTER = record_path(REPO, "machines", "register.json")
+OUT = record_path(REPO, "plan", "render", "index.html")
 
 BUILDING_FIELDS = ("postcode", "path", "island", "compound", "provenance", "seat", "lifecycle", "built_on", "runs",
                    "size_kb", "commits_14d", "code_score", "up_to_code")

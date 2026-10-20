@@ -21,7 +21,10 @@ import legend  # partners and their clients (plan/legend.json)
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT = os.path.join(REPO, "machines", "register.json")
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
+OUT = record_path(REPO, "machines", "register.json")
 
 
 # the estate's own commits (doors, untracking, repoints, fixes) are not work; the same filter as tools/code.py lifecycle

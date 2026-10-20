@@ -12,7 +12,7 @@ What "disk-only work" means for one checkout (repo, worktree or submodule):
 
 Where it goes (first match wins):
   own-private  a private remote on an owned account (sisodias, HALO-AGENCY) (Lordsisodia/X is resolved to its sisodias mirror):
-               push to refs/backup/<machine>/<slug>/{heads/<branch>,wip}. Custom refs: no CI, no deploys.
+               push to refs/backup/<machine>/<slug>/runs/<id>/{heads/<branch>,wip}. Custom refs: no CI, no deploys.
   new-repo     no usable remote: create private sisodias/<name>, add it as `origin` (or `estate` if an
                origin exists), push all branches, tags and the wip ref.
   overlay      public own repo or third-party clone: a git bundle of just the local delta, written to
@@ -20,13 +20,16 @@ Where it goes (first match wins):
   skip         ephemeral paths (test temp dirs, harness caches) and checkouts with nothing local.
 Secrets: gitleaks scans what would leave the machine. Flagged WIP files are left out of the snapshot;
 flagged commits hold that checkout (status=held) for a human look, and its disk-only work goes off the machine
-age-encrypted instead (held_copy: private sisodias/siso-held-backups, one ref per checkout).
+age-encrypted instead (held_copy: private sisodias/siso-held-backups, one immutable ref per checkout fingerprint).
 """
-import argparse, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, fcntl, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, uuid
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 OWNER = "sisodias"
@@ -38,7 +41,7 @@ MAX_WIP_FILES = 20000
 MAX_WIP_BYTES = 200 * 1024 * 1024
 MAX_BUNDLE = 95 * 1024 * 1024
 SCAN_COMMITS = True   # scans only commits not pushed before (see pushed-tips.json), so repeat runs stay fast
-TIPS_FILE = os.path.join(REPO, "machines", "{machine}", "pushed-tips.json")
+TIPS_FILE = record_path(REPO, "machines", "{machine}", "pushed-tips.json")
 
 # Ephemeral by reading: test temp dirs (oracle-streaming acceptance tests mkdtemp into .t/),
 # harness caches and harness-made backups of third-party plugins.
@@ -86,7 +89,7 @@ def github_list(max_age=3600, owner=OWNER):
     """Our GitHub repos (machines/github/<owner>.json), refreshed from GitHub when older than an hour. A stale list made
     every repo created after it look deleted (24 Sep: sisodias/kellman and sisodias/halo-agency were read as deleted and
     would have been bundled instead of pushed), so a failed refresh keeps the old list and says so."""
-    f = os.path.join(REPO, "machines", "github", f"{owner}.json")
+    f = record_path(REPO, "machines", "github", f"{owner}.json")
     if not os.path.exists(f) or time.time() - os.path.getmtime(f) > max_age:
         code, out, err = sh(["gh", "repo", "list", owner, "--limit", "5000",
                              "--json", "name,nameWithOwner,visibility,isArchived,isFork,diskUsage,pushedAt,description"], timeout=180)
@@ -108,7 +111,7 @@ def github_list(max_age=3600, owner=OWNER):
 
 
 def load(machine):
-    inv = json.load(open(os.path.join(REPO, "machines", machine, "repos.json")))
+    inv = json.load(open(record_path(REPO, "machines", machine, "repos.json")))
     gh = {r["name"].lower(): r for r in github_list()}
     for o in OWNED[1:]:     # other owned accounts sit under "owner/name", so a same-named repo never collides
         gh.update({r["nameWithOwner"].lower(): r for r in github_list(owner=o)})
@@ -165,17 +168,31 @@ NEVER_COPY_PATHS = re.compile(r"/(HALO_Agency/crm|partners/halo/crm|clients/halo
 def vaulted():
     """Repos folded into sisodias/siso-vault (machines/*/vault.jsonl)."""
     out = set()
-    for f in glob.glob(os.path.join(REPO, "machines", "*", "vault.jsonl")):
+    for f in glob.glob(record_path(REPO, "machines", "*", "vault.jsonl")):
         out |= {json.loads(l)["repo"].lower() for l in open(f) if l.strip()}
     return out
 
 
 VAULTED = vaulted()
+_ARCHIVE_RETIREMENTS = {}
+
+
+def archive_retired(rec):
+    """Shaan's explicit retirement is conditional on HALO's archive being complete."""
+    target = "HALO-AGENCY/halo-streaming-project"
+    if not any(f"{g['owner']}/{g['repo']}".lower() == target.lower() for g in rec.get("github", [])):
+        return False
+    if target not in _ARCHIVE_RETIREMENTS:
+        code, out, _ = sh(["gh", "api", f"repos/{target}", "--jq", ".archived"])
+        _ARCHIVE_RETIREMENTS[target] = code == 0 and out.strip() == "true"
+    return _ARCHIVE_RETIREMENTS[target]
 
 
 def classify(rec, bypath, gh, depth=0):
     """Decide target for one checkout. Returns dict(action, target, visibility, why, ...)."""
     p = tilde(rec["path"])
+    if archive_retired(rec):
+        return {"action": "skip", "why": "Archived HALO source folded into HALO-AGENCY/halo; retired by Shaan's 21 Oct order"}
     if rec["path"] == WS:
         return {"action": "skip", "why": "workspace root: handled by the umbrella step (its origin is wrongly sisodias/oracle)"}
     for rx, why in SKIP:
@@ -189,7 +206,9 @@ def classify(rec, bypath, gh, depth=0):
             return {"action": "skip", "why": why}
     if rec.get("broken"):
         return {"action": "skip", "why": rec["broken"]}
-    local = (rec.get("unpushed_commits") or 0) + (rec.get("dirty") or 0) + (rec.get("untracked") or 0)
+    local = sum(rec.get(key) if rec.get(key) is not None else 1
+                for key in ("unpushed_commits", "dirty", "untracked"))
+    # An observation that timed out is potential work, never evidence of clean.
     held = [g for g in rec.get("github") or [] if f"{g.get('owner')}/{g.get('repo')}".lower() in VAULTED]
     if held:  # the vault holds this repo as a bundle; pushing here would keep (or re-create) the repo it replaced
         return {"action": "skip", "why": "held by the vault (tools/vault.py)" + (
@@ -304,7 +323,7 @@ def plan(machine):
             return gd.split("/.git/worktrees/")[0] if "/.git/worktrees/" in gd else None
         except Exception:
             return None
-    np_ = os.path.join(REPO, "machines", machine, "names.json")
+    np_ = record_path(REPO, "machines", machine, "names.json")
     names = json.load(open(np_)) if os.path.exists(np_) else {}  # optional: hand names, SKIP/HOLD/OVERLAY lines
     main_cls = {}
     for r in recs:
@@ -346,7 +365,7 @@ def plan(machine):
                   "unpushed": r.get("unpushed_commits"), "dirty": r.get("dirty"), "untracked": r.get("untracked")})
         out.append(c)
     doc = {"machine": machine, "planned_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "items": out}
-    path = os.path.join(REPO, "machines", machine, "backup-plan.json")
+    path = record_path(REPO, "machines", machine, "backup-plan.json")
     json.dump(doc, open(path, "w"), indent=1)
     from collections import Counter
     print(json.dumps(Counter(i["action"] for i in out)), "->", path)
@@ -356,26 +375,36 @@ def plan(machine):
 # ---------- execution ----------
 
 def gitleaks_commits(path, logopts):
-    """(findings, error). A timeout comes back as an error, so the caller holds the checkout."""
+    """(findings, error). Only a valid report consistent with the exit code is a scan result."""
     fd, rep = tempfile.mkstemp(suffix=".json")
     os.close(fd)
     try:
         cfg = os.path.join(path, ".gitleaks.toml")     # the repo's own allowlist, else the estate's (houses.py leaks_config)
         cfg = cfg if os.path.exists(cfg) else os.path.join(WS, ".gitleaks.toml")
-        code, _, err = sh(["gitleaks", "git", path, "--config", cfg, "--log-opts", logopts, "--redact", "--no-banner",
+        code, _, _ = sh(["gitleaks", "git", path, "--config", cfg, "--log-opts", logopts, "--redact", "--no-banner",
                            "--report-format", "json", "--report-path", rep, "--exit-code", "3"],
                           timeout=int(os.environ.get("ESTATE_GITLEAKS_TIMEOUT", "1800")))
+        if code not in (0, 3):
+            return None, f"scanner-exit-{code}"
+        try:
+            with open(rep) as fh:
+                found = json.load(fh)
+        except (OSError, ValueError):
+            return None, "invalid-report"
+        if not isinstance(found, list) or any(not isinstance(f, dict)
+                or not isinstance(f.get("File"), str) or not f["File"]
+                or not isinstance(f.get("Commit", ""), str) for f in found):
+            return None, "invalid-report"
+        if (code == 0 and found) or (code == 3 and not found):
+            return None, "exit-report-mismatch"
+        return [{"file": f["File"], "rule": f.get("RuleID"), "commit": f.get("Commit", "")[:10]} for f in found], None
     except subprocess.TimeoutExpired:
-        os.unlink(rep)
         return None, "timeout"
-    try:
-        found = json.load(open(rep)) if os.path.getsize(rep) else []
-    except Exception:
-        found = []
-    os.unlink(rep)
-    if code not in (0, 3):
-        return None, err[-300:]
-    return [{"file": f.get("File"), "rule": f.get("RuleID"), "commit": (f.get("Commit") or "")[:10]} for f in found], None
+    except OSError:
+        return None, "scanner-unavailable"
+    finally:
+        if os.path.exists(rep):
+            os.unlink(rep)
 
 
 FIREFOX_SECRETS = re.compile(r"(^|/)(cookies\.sqlite|logins\.json|key[34]\.db|cert9\.db)(-wal|-shm|-journal)?$")
@@ -558,13 +587,14 @@ def held_copy(path, machine, slug, live, wip, create, whole=True):
     """whole: a repo's own item keeps every branch and detached worktree HEAD; a worktree's item only its HEAD and WIP."""
     tmp = tempfile.mkdtemp(prefix=".siso-ephemeral-held-")
     tmp_refs = []
+    tmp_id = uuid.uuid4().hex
     try:
         _, wt, _ = git(path, "worktree", "list", "--porcelain")
         heads = [l.split()[1] for b in wt.split("\n\n") if "\ndetached" in b for l in b.splitlines() if l.startswith("HEAD ")]
         if not whole:
             heads = [git(path, "rev-parse", "HEAD")[1]]
         for n, sha in enumerate(heads + ([wip] if wip else [])):
-            ref = f"refs/estate-tmp/{slug}/held-{n}"
+            ref = f"refs/estate-tmp/{slug}/{tmp_id}/held-{n}"
             git(path, "update-ref", ref, sha)
             tmp_refs.append(ref)
         refs = (["--branches"] if whole else []) + tmp_refs
@@ -575,7 +605,7 @@ def held_copy(path, machine, slug, live, wip, create, whole=True):
         _, tips, _ = git(path, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads") if whole else (0, "", "")
         tips += "\n" + " ".join(heads) + "\n" + (git(path, "rev-parse", f"{wip}^{{tree}}")[1] if wip else "")  # WIP by tree: its commit is new every run
         fp = hashlib.sha256(tips.encode()).hexdigest()[:16]
-        ref = f"refs/heads/{machine}/{slug}"
+        ref = f"refs/heads/retained/{machine}/{slug}/{fp}"
         url = HELD_URL
         if not os.path.isdir(HELD_GIT):
             sh(["git", "init", "-q", "--bare", HELD_GIT])
@@ -592,8 +622,28 @@ def held_copy(path, machine, slug, live, wip, create, whole=True):
             remote = ""
         elif code != 0:
             return {"status": "error", "error": "ls-remote: " + err[-300:]}
-        if f"fingerprint {fp}" in msg and local and remote.split()[:1] == [local]:
-            return {"status": "unchanged", "repo": HELD_REPO, "ref": ref, "commit": local[:12], "fingerprint": fp}
+        def accept_remote(advertised):
+            remote_sha = advertised.split()[0]
+            retained_ref = f"refs/archive/held-remote/{remote_sha}"
+            rc, _, error = sh(["git", "-C", HELD_GIT, "fetch", "--no-write-fetch-head", "--no-tags", url, f"{ref}:{retained_ref}"], timeout=3600)
+            _, fetched, _ = sh(["git", "-C", HELD_GIT, "rev-parse", retained_ref])
+            _, message, _ = sh(["git", "-C", HELD_GIT, "log", "-1", "--format=%B", fetched])
+            if rc != 0 or fetched != remote_sha or f"fingerprint {fp}" not in message:
+                return {"status": "error", "error": "existing retained generation failed fingerprint/SHA verification"}
+            return {"status": "unchanged", "repo": HELD_REPO, "ref": ref, "commit": remote_sha, "fingerprint": fp}
+
+        if remote.split() and remote.split()[:1] != [local]:
+            return accept_remote(remote)
+        if f"fingerprint {fp}" in msg and local:
+            if remote.split()[:1] != [local]:
+                code, _, err = sh(["git", "-C", HELD_GIT, "push", "-q", "origin", f"{local}:{ref}"], timeout=3600)
+                if code != 0:
+                    return {"status": "error", "error": "retained retry: " + err[-300:]}
+                code, remote, err = sh(["git", "ls-remote", url, ref], timeout=120)
+                if code != 0 or remote.split()[:1] != [local]:
+                    return {"status": "error", "error": "retained retry: ls-remote mismatch"}
+                return {"status": "pushed", "repo": HELD_REPO, "ref": ref, "commit": local, "fingerprint": fp}
+            return {"status": "unchanged", "repo": HELD_REPO, "ref": ref, "commit": local, "fingerprint": fp}
         bfile, efile = os.path.join(tmp, "work.bundle"), os.path.join(tmp, "work.bundle.age")
         code, _, err = git(path, "bundle", "create", bfile, *refs, *excl, timeout=1800)
         if code != 0:
@@ -623,13 +673,19 @@ def held_copy(path, machine, slug, live, wip, create, whole=True):
                    GIT_COMMITTER_NAME="siso-estate", GIT_COMMITTER_EMAIL="estate@siso.local")
         _, commit, _ = sh(["git", "-C", HELD_GIT, "commit-tree", tree, "-m",
                            f"held {tilde(path)} ({machine})\n\nfingerprint {fp}\nbytes {size}"], env=env)
-        sh(["git", "-C", HELD_GIT, "update-ref", ref, commit])
-        code, _, err = sh(["git", "-C", HELD_GIT, "push", "-q", "--force", "origin", f"{commit}:{ref}"], timeout=3600)
+        code, _, err = sh(["git", "-C", HELD_GIT, "update-ref", ref, commit, "0" * 40])
         if code != 0:
+            return {"status": "error", "error": "retained ref already exists; preserved without replacement"}
+        code, _, err = sh(["git", "-C", HELD_GIT, "push", "-q", "origin", f"{commit}:{ref}"], timeout=3600)
+        if code != 0:
+            # Another cache may have won creation of this fingerprint. Adopt only its verified generation.
+            rc, advertised, _ = sh(["git", "ls-remote", url, ref], timeout=120)
+            if rc == 0 and advertised:
+                return accept_remote(advertised)
             return {"status": "error", "error": "push: " + err[-300:]}
         _, remote, _ = sh(["git", "ls-remote", url, ref], timeout=120)
         ok = remote.split()[:1] == [commit]
-        return {"status": "pushed" if ok else "error", "repo": HELD_REPO, "ref": ref, "commit": commit[:12],
+        return {"status": "pushed" if ok else "error", "repo": HELD_REPO, "ref": ref, "commit": commit,
                 "bytes": size, "chunks": len(entries) - 1, "fingerprint": fp, **({} if ok else {"error": "ls-remote mismatch"})}
     except subprocess.TimeoutExpired as e:
         return {"status": "error", "error": f"timeout: {e.cmd[:4]}"}
@@ -643,6 +699,7 @@ def run_item(it, machine, create):
     path, act = it["path"], it["action"]
     res = {"path": path, "action": act, "target": it.get("target"), "slug": it["slug"]}
     t0 = time.time()
+    candidate, overlay_temp_refs = None, []
     try:
         if not os.path.isdir(path):
             res["status"] = "missing"
@@ -680,31 +737,41 @@ def run_item(it, machine, create):
         if (branches or orphan_head) and SCAN_COMMITS:
             scan = [f"refs/heads/{b}" for b, _ in branches] + (["HEAD"] if orphan_head else [])
             leaks, err = gitleaks_commits(path, " ".join(scan + not_elsewhere(live, path)))
-            if leaks or (err and "timeout" in err):
+            if err:
+                res["status"], res["error"] = "held", "commit secret scan failed; nothing transported"
+                res["gitleaks_error"] = err
+                return res
+            if leaks:
                 res["status"] = "held"
-                if leaks:
-                    res["leaks_in_commits"], res["leak_count"] = leaks[:20], len(leaks)
-                else:
-                    res["error"] = "commit secret scan timed out; nothing pushed in the clear"
+                res["leaks_in_commits"], res["leak_count"] = leaks[:20], len(leaks)
                 wip, _ = wip_snapshot(path, machine)
                 res["held_copy"] = held_copy(path, machine, it["slug"], live, wip, create, whole=is_repo)
                 return res
-            if err:
-                res["gitleaks_error"] = err
         # 3. WIP snapshot, re-built without any file gitleaks flags
         wip, info = wip_snapshot(path, machine)
         res["wip_info"] = info
         if wip:
             leaks, err = gitleaks_commits(path, f"-1 {wip}")
-            if err == "timeout":
-                res["wip_skipped"] = "secret scan of the uncommitted files timed out; WIP not pushed"
-                wip = None
+            if err:
+                res["status"], res["error"] = "held", "WIP secret scan failed; nothing transported"
+                res["gitleaks_error"] = err
+                return res
             if leaks:
                 files = sorted({l["file"] for l in leaks if l["file"]})
                 res["wip_excluded_for_secrets"] = files
                 wip, info = wip_snapshot(path, machine, exclude=files)
                 res["wip_info"] = info
-        ns = f"refs/backup/{machine}/{it['slug']}"
+                if wip:
+                    leaks, err = gitleaks_commits(path, f"-1 {wip}")
+                    if err or leaks:
+                        res["status"], res["error"] = "held", "filtered WIP secret scan not clean; nothing transported"
+                        if err:
+                            res["gitleaks_error"] = err
+                        else:
+                            res["leak_count"] = len(leaks)
+                        return res
+        run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex
+        ns = f"refs/backup/{machine}/{it['slug']}/runs/{run_id}"
         if act in ("own-private", "new-repo"):
             url = f"https://github.com/{it['target']}.git"
             if act == "new-repo":
@@ -728,33 +795,61 @@ def run_item(it, machine, create):
                     git(path, "remote", "set-url", rname, url)
                 res["remote_added"] = rname
                 if is_repo and res.get("created") and not it.get("shared_target"):
-                    specs = ["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"]
+                    specs = ["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"]
                 elif is_repo:
-                    specs = [f"+refs/heads/{b}:{ns}/heads/{b}" for b, _ in unpushed_branches(path, [])]
+                    specs = [f"refs/heads/{b}:{ns}/heads/{b}" for b, _ in unpushed_branches(path, [])]
                 else:
                     specs = []
             else:
                 if not related(path, it["target"]):
                     act = "overlay"
                     res["note"] = f"history unrelated to {it['target']}; bundled instead of pushing foreign history into it"
-                specs = [f"+refs/heads/{b}:{ns}/heads/{b}" for b, _ in branches]
+                specs = [f"refs/heads/{b}:{ns}/heads/{b}" for b, _ in branches]
             if act == "overlay":
                 specs = []
             if orphan_head:
-                specs.append(f"+HEAD:{ns}/head")
+                specs.append(f"HEAD:{ns}/head")
             if wip:
-                specs.append(f"+{wip}:{ns}/wip")
+                specs.append(f"{wip}:{ns}/wip")
             if act != "overlay" and not specs:
                 res["status"] = "nothing-to-push"
                 return res
             if act != "overlay":
+                expected = {}
+                for spec in specs:
+                    src, dst = spec.split(":", 1)
+                    if "*" in src:
+                        rc, rows, error = git(path, "for-each-ref", "--format=%(objectname) %(refname)", src[:-1])
+                        if rc != 0:
+                            raise RuntimeError("cannot resolve backup source refs")
+                        for row in rows.splitlines():
+                            sha, source_ref = row.split()
+                            expected[dst[:-1] + source_ref[len(src)-1:]] = sha
+                    else:
+                        rc, sha, error = git(path, "rev-parse", src)
+                        if rc != 0:
+                            raise RuntimeError("cannot resolve backup source")
+                        expected[dst] = sha
+                # Freeze every source before transport: a lost response and retry must resend identical objects.
+                specs = [f"{sha}:{ref}" for ref, sha in expected.items()]
+                rc, advertised, error = git(path, "ls-remote", url, *expected, timeout=120)
+                observed = {row.split()[1]: row.split()[0] for row in advertised.splitlines() if len(row.split()) == 2}
+                if rc != 0 or any(ref in observed and observed[ref] != sha for ref, sha in expected.items()):
+                    res["status"], res["error"] = "error", "backup destination exists with different content or cannot be checked"
+                    return res
                 code, out, err = git(path, "push", "--no-verify", "--porcelain", url, *specs, timeout=3600)
                 if code != 0 and ("408" in err or "postBuffer" in err or "rewind" in err or "unexpected disconnect" in err):
                     code, out, err = git(path, "-c", "http.postBuffer=524288000", "push", "--no-verify", "--porcelain", url, *specs, timeout=3600)
                 res["refs"] = specs
                 res["status"] = "pushed" if code == 0 else "error"
                 if code == 0:
-                    tips = [git(path, "rev-parse", f"refs/heads/{b}")[1] for b, _ in branches]
+                    rc, advertised, error = git(path, "ls-remote", url, *expected, timeout=120)
+                    observed = {row.split()[1]: row.split()[0] for row in advertised.splitlines() if len(row.split()) == 2}
+                    res["remote_verified"] = rc == 0 and all(observed.get(ref) == sha for ref, sha in expected.items())
+                    if not res["remote_verified"]:
+                        res["status"], res["error"] = "error", "backup push succeeded but remote SHA verification failed"
+                        return res
+                    tips = [expected.get(f"{ns}/heads/{b}") or expected.get(f"refs/heads/{b}") for b, _ in branches]
                     res["pushed_tips"] = [t for t in tips if t]
                 if code != 0:
                     res["error"] = err[-600:]
@@ -767,58 +862,87 @@ def run_item(it, machine, create):
                 tmp_refs.append(f"refs/heads/{b}")
             if orphan_head:
                 _, hs, _ = git(path, "rev-parse", "HEAD")
-                git(path, "update-ref", f"refs/estate-tmp/{it['slug']}/head", hs)
-                tmp_refs.append(f"refs/estate-tmp/{it['slug']}/head")
+                git(path, "update-ref", f"refs/estate-tmp/{it['slug']}/{run_id}/head", hs)
+                tmp_refs.append(f"refs/estate-tmp/{it['slug']}/{run_id}/head")
+                overlay_temp_refs.append(tmp_refs[-1])
             if wip:
-                git(path, "update-ref", f"refs/estate-tmp/{it['slug']}/wip", wip)
-                tmp_refs.append(f"refs/estate-tmp/{it['slug']}/wip")
+                git(path, "update-ref", f"refs/estate-tmp/{it['slug']}/{run_id}/wip", wip)
+                tmp_refs.append(f"refs/estate-tmp/{it['slug']}/{run_id}/wip")
+                overlay_temp_refs.append(tmp_refs[-1])
             if not tmp_refs:
                 res["status"] = "nothing-to-push"
                 return res
             outdir = os.path.join(WS, ".estate", "overlays", machine)
             os.makedirs(outdir, exist_ok=True)
             bfile = os.path.join(outdir, f"{it['slug']}.bundle")
-            code, out, err = git(path, "bundle", "create", bfile, *tmp_refs, *not_elsewhere(live), timeout=1800)
-            for t in ("wip", "head"):
-                git(path, "update-ref", "-d", f"refs/estate-tmp/{it['slug']}/{t}")
-            if code != 0:
-                res["status"], res["error"] = "error", "bundle: " + err[-300:]
-            elif os.path.getsize(bfile) > MAX_BUNDLE:
-                res["status"], res["error"] = "error", f"bundle too big ({os.path.getsize(bfile)//1048576} MB); not kept"
-                os.unlink(bfile)
-            else:
-                res["status"], res["bundle"], res["bundle_bytes"] = "bundled", tilde(bfile), os.path.getsize(bfile)
-                res["base_remote"] = it.get("target")
+            # One retain-and-replace transaction per stable overlay path, across backup processes.
+            with open(bfile + ".retention-lock", "a") as overlay_lock:
+                fcntl.flock(overlay_lock, fcntl.LOCK_EX)
+                if os.path.isfile(bfile):
+                    # Keep the stable latest path used by umbrella/restore, retaining its old generation first.
+                    retained = os.path.join(outdir, f"{it['slug']}-retained-{run_id}.bundle")
+                    shutil.copy2(bfile, retained)
+                    with open(bfile, "rb") as old, open(retained, "rb") as saved:
+                        if any(chunk != saved.read(len(chunk)) for chunk in iter(lambda: old.read(1024 * 1024), b"")) or saved.read(1):
+                            raise RuntimeError("overlay retention copy mismatch; existing bundle unchanged")
+                    res["retained_bundle"] = tilde(retained)
+                candidate = bfile + ".pending-" + run_id
+                code, out, err = git(path, "bundle", "create", candidate, *tmp_refs, *not_elsewhere(live), timeout=1800)
+                if code != 0:
+                    res["status"], res["error"] = "error", "bundle: " + err[-300:]
+                elif os.path.getsize(candidate) > MAX_BUNDLE:
+                    # Git's blob limit is a transport boundary, not permission to lose the bundle.
+                    retained_dir = os.path.join(WS, "_data", "estate", "retained-overlays", machine)
+                    os.makedirs(retained_dir, exist_ok=True)
+                    retained = os.path.join(retained_dir, f"{it['slug']}-{run_id}.bundle")
+                    os.replace(candidate, retained)
+                    res["retained_bundle"] = tilde(retained)
+                    res["held_copy"] = held_copy(path, machine, it["slug"], live, wip, create,
+                                                 whole=it.get("kind") != "worktree")
+                    if held_safe(res):
+                        res["status"] = "data-backed"
+                        res.pop("error", None)
+                    else:
+                        res["status"], res["error"] = "error", "oversized overlay retained locally; chunked data backup failed"
+                else:
+                    os.replace(candidate, bfile)
+                    res["status"], res["bundle"], res["bundle_bytes"] = "bundled", tilde(bfile), os.path.getsize(bfile)
+                    res["base_remote"] = it.get("target")
     except subprocess.TimeoutExpired as e:
         res["status"], res["error"] = "error", f"timeout: {e.cmd[:4]}"
     except Exception as e:  # keep the batch going; record the failure
         res["status"], res["error"] = "error", repr(e)[-300:]
+    finally:
+        if candidate and os.path.isfile(candidate):
+            os.unlink(candidate)
+        for temp_ref in overlay_temp_refs:
+            git(path, "update-ref", "-d", temp_ref)
     res["secs"] = round(time.time() - t0, 1)
     return res
 
 
 def run(machine, only, jobs, create, resume=False):
-    doc = json.load(open(os.path.join(REPO, "machines", machine, "backup-plan.json")))
+    doc = json.load(open(record_path(REPO, "machines", machine, "backup-plan.json")))
     items = [i for i in doc["items"] if not only or only in i["path"]]
     if resume:
         done = set()
-        lp = os.path.join(REPO, "machines", machine, "backup.log")
+        lp = record_path(REPO, "machines", machine, "backup.log")
         for line in open(lp) if os.path.exists(lp) else []:
             try:
                 r = json.loads(line)
             except Exception:
                 continue
-            if r.get("status") in ("pushed", "bundled", "clean", "skip", "nothing-to-push", "held"):
+            if r.get("status") in ("pushed", "bundled", "data-backed", "clean", "skip", "nothing-to-push", "held"):
                 done.add(r["path"])
         items = [i for i in items if i["path"] not in done]
-    out_path = os.path.join(REPO, "machines", machine, "backup.json")
+    out_path = record_path(REPO, "machines", machine, "backup.json")
     prev = {}
     if os.path.exists(out_path):
         prev = {r["path"]: r for r in json.load(open(out_path)).get("results", [])}
     if not only and not resume:  # a full run keeps only checkouts still planned (gone ones read as held/error forever)
         planned = {i["path"] for i in doc["items"]}
         prev = {p: r for p, r in prev.items() if p in planned}
-    log = open(os.path.join(REPO, "machines", machine, "backup.log"), "a")
+    log = open(record_path(REPO, "machines", machine, "backup.log"), "a")
     load_tips(machine)
     results = []
     # new repos are created one at a time (GitHub rate-limits repo creation); pushes run in parallel
@@ -827,7 +951,7 @@ def run(machine, only, jobs, create, resume=False):
 
     def go(i):
         r = run_item(i, machine, create)
-        print(json.dumps({k: r.get(k) for k in ("status", "action", "path", "error")}), file=log, flush=True)
+        print(json.dumps({k: r.get(k) for k in ("status", "action", "path", "error", "refs", "remote_verified", "held_copy", "bundle", "retained_bundle")}), file=log, flush=True)
         return r
     with ThreadPoolExecutor(jobs) as ex:
         results += list(ex.map(go, para))
@@ -842,6 +966,7 @@ def run(machine, only, jobs, create, resume=False):
                "results": sorted(prev.values(), key=lambda r: r["path"])}, open(out_path, "w"), indent=1)
     from collections import Counter
     print(json.dumps(Counter(r["status"] for r in results)), "->", out_path)
+    return 1 if any(r["status"] == "error" or (r["status"] == "held" and not held_safe(r)) for r in results) else 0
 
 
 A0_INBOX = os.path.join(WS, "SISO_Agents", "agent-zero", "siso-firstmate", ".agents", "a0", "inbox.log")
@@ -856,8 +981,8 @@ def alert(machine):
     """Make a held checkout loud (A0, 3 Oct: "where does Shaan/A0 see held?"). Held with no good encrypted copy: a console
     card and an A0 inbox line every night until it is fixed. Newly held with a safe copy: one card, because the secret it
     holds may need rotating (Shaan's call). Exit 1 when any held checkout is not backed up."""
-    res = json.load(open(os.path.join(REPO, "machines", machine, "backup.json"))).get("results", [])
-    seen_path = os.path.join(REPO, "machines", machine, "held-seen.json")
+    res = json.load(open(record_path(REPO, "machines", machine, "backup.json"))).get("results", [])
+    seen_path = record_path(REPO, "machines", machine, "held-seen.json")
     seen = json.load(open(seen_path)) if os.path.exists(seen_path) else {}
     held = [r for r in res if r.get("status") == "held"]
     unsafe = [r for r in held if not held_safe(r)]
@@ -901,7 +1026,7 @@ def main():
     if a.cmd == "plan":
         plan(a.machine)
     else:
-        run(a.machine, a.only, a.jobs, a.create_repos, a.resume)
+        sys.exit(run(a.machine, a.only, a.jobs, a.create_repos, a.resume))
 
 
 if __name__ == "__main__":

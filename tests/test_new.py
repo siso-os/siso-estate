@@ -42,7 +42,7 @@ class New(unittest.TestCase):
     def test_real_birth(self):
         with tempfile.TemporaryDirectory() as ws:
             os.makedirs(os.path.join(ws, "SISO_Agents"))
-            r = self.run_new("engine/demo-tool", "--what", "a demo", "--run", ws=ws)
+            r = self.run_new("engine/demo-tool", "--what", "a demo", "--run", "--no-github", ws=ws)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
             top = os.path.join(ws, "SISO_Agents", "demo-tool")
             for f in ("AGENTS.md", "CLAUDE.md", ".agents/building.json", ".agents/HANDOFF.md", ".agents/memory/MEMORY.md", ".agents/owners.log"):

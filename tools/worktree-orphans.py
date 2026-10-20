@@ -1,150 +1,149 @@
 #!/usr/bin/env python3
-"""Vault worktrees git can no longer read (their parent clone is gone), then free their space.
-
-  worktree-orphans.py                      the plan: each orphaned worktree under _data/worktrees, its size, busy or not
-  worktree-orphans.py --run [--only R/L] [--idle-hours H]   for each one no process holds: commit every file (tracked, untracked, and
-                                           ignored files that do not rebuild) into one bare repo in the vault, verify
-                                           the folder against its commit by content, and only then remove the folder;
-                                           a receipt line per folder in machines/<m>/removed.jsonl (or $ESTATE_REMOVED)
-
-An orphan is a folder whose .git file points at a gitdir that no longer exists, so `git status` fails and every other
-tool sees it as unreadable. 14 Oct: the mini had 14 (24 GiB) after oracle/stream-b was removed on 8 Oct. Restore:
-  git --git-dir=<vault>/orphans.git --work-tree=<empty dir> checkout refs/orphans/<repo>/<lane> -- .
-Python 3.9 (the mini's /usr/bin/python3).
-"""
-import argparse, json, os, re, shutil, socket, subprocess, sys, tempfile, time
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.dirname(HERE)
-WS = os.path.expanduser("~/SISO_Workspace")
-WT = os.path.join(WS, "_data", "worktrees")
-HOST = socket.gethostname().lower()
-MACHINE = os.environ.get("ESTATE_MACHINE") or ("laptop" if HOST.startswith("shaans-macbook") else "mini" if "mini" in HOST else HOST.split(".")[0])
-RECEIPTS = os.environ.get("ESTATE_REMOVED") or os.path.join(REPO, "machines", MACHINE, "removed.jsonl")
-REBUILD = re.compile(r"(^|/)(node_modules|dist|build|target|\.next|\.turbo|\.vite|\.cache|coverage|\.wrangler|\.astro|"
-                     r"__pycache__|\.pytest_cache|\.venv|venv|out|\.oracle-builds|\.parcel-cache|\.svelte-kit|storybook-static)(/|$)|"
-                     r"\.tsbuildinfo$|\.DS_Store$|\.pyc$")
+"""Preserve unreadable linked worktrees as encrypted evidence; retire only after GitHub, vault and R2 restore proof."""
+import argparse
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import time
+from urllib.parse import urlparse
 
 
-def git(store, work, *a, index=None, inp=None):
-    env = dict(os.environ, **({"GIT_INDEX_FILE": index} if index else {}))
-    return subprocess.run(["git", "--git-dir=" + store, *(["--work-tree=" + work] if work else []), *a],
-                          capture_output=True, text=True, env=env, input=inp)
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, Path(__file__).with_name(name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+archive = load('archive-offload')
+wip = load('worktree-wip')
+WT = Path.home() / 'SISO_Workspace/_data/worktrees'
+VAULT = Path('/Volumes/SISO-STORAGE-VAULT')
+REBUILD = {'node_modules', '.next', 'dist', 'build', '.turbo', 'target'}
 
 
 def orphans():
-    for repo in sorted(os.listdir(WT)) if os.path.isdir(WT) else []:
-        for lane in sorted(os.listdir(os.path.join(WT, repo))) if os.path.isdir(os.path.join(WT, repo)) else []:
-            p = os.path.join(WT, repo, lane)
-            g = os.path.join(p, ".git")
-            if os.path.isfile(g):
-                gd = open(g).read().strip().split(": ", 1)[-1]
-                if not os.path.exists(gd):
-                    yield repo, lane, p, gd
+    for path in sorted(WT.glob('*/*')):
+        if (path / '.git').is_file() and not path.is_symlink() and not wip.PRIVATE.search(str(path)) and not wip.NO_REMOVE.search(str(path)):
+            state = wip.git(str(path), 'status', '--porcelain')
+            if state.returncode:
+                yield path
 
 
-def held():
-    out = subprocess.run(["lsof", "-u", str(os.getuid()), "-Fn", "-w"], capture_output=True, text=True).stdout
-    return [l[1:] for l in out.splitlines() if l.startswith("n" + WT)]
+def fingerprint(path):
+    seen = {}
+    for base, dirs, files in os.walk(path, followlinks=False):
+        dirs[:] = [d for d in dirs if d not in REBUILD]
+        for p in [Path(base)] + [Path(base) / n for n in files] + [Path(base) / n for n in dirs if (Path(base) / n).is_symlink()]:
+            s = p.lstat()
+            seen[str(p.relative_to(path))] = (s.st_ino, s.st_size, s.st_mtime_ns, s.st_mode)
+    return seen
 
 
-def du_kib(p):
-    out = subprocess.run(["du", "-sk", p], capture_output=True, text=True).stdout
-    return int(out.split()[0]) if out else 0
-
-
-def others(store, work, index):
-    """Untracked-by-the-index files outside rebuildable output (after an add -A this is the ignored set)."""
-    out = git(store, work, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", index=index).stdout
-    return [f for f in out.split("\0") if f and not REBUILD.search(f)]
-
-
-def vault_one(store, repo, lane, p, gd):
-    tmp = tempfile.mkdtemp(prefix="orph-")
+def r2_ready():
+    remote = os.environ.get('ESTATE_R2_REMOTE', '')
+    if ':' not in remote or not remote.split(':', 1)[1] or not shutil.which('rclone'):
+        return False
     try:
-        idx = os.path.join(tmp, "index")
-        if git(store, p, "add", "-A", ".", index=idx).returncode:
-            return None, "git add failed"
-        keep = others(store, p, idx)
-        if keep and git(store, p, "add", "-f", "--pathspec-from-file=-", "--pathspec-file-nul", index=idx,
-                        inp="\0".join(keep)).returncode:
-            return None, "git add of ignored keepers failed"
-        tree = git(store, None, "write-tree", index=idx).stdout.strip()
-        msg = "orphaned worktree %s/%s (gitdir %s gone); vaulted %s by ESTATE" % (repo, lane, gd, time.strftime("%Y-%m-%d"))
-        c = git(store, None, "commit-tree", tree, inp=msg).stdout.strip()
-        if not c or git(store, None, "update-ref", "refs/orphans/%s/%s" % (repo, lane), c).returncode:
-            return None, "commit failed"
-        # verify by content: an index read from the commit matches the folder; nothing else but rebuildable output
-        v = os.path.join(tmp, "verify")
-        git(store, None, "read-tree", c, index=v)
-        git(store, p, "update-index", "-q", "--refresh", index=v)
-        differ = [f for f in git(store, p, "diff-files", "--name-only", index=v).stdout.splitlines() if f]
-        extra = [f for f in git(store, p, "ls-files", "--others", index=v).stdout.splitlines() if f and not REBUILD.search(f)]
-        if differ or extra:
-            return None, "verify failed: %d differ, %d extra (e.g. %s)" % (len(differ), len(extra), (differ + extra)[0])
-        return c, None
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        result = subprocess.run(['rclone', 'config', 'dump'], capture_output=True, text=True, timeout=20)
+        config = json.loads(result.stdout).get(remote.split(':', 1)[0], {})
+        endpoint = config.get('endpoint', '')
+        parsed = urlparse(endpoint if '://' in endpoint else 'https://' + endpoint)
+        return (result.returncode == 0 and config.get('type') == 's3' and parsed.scheme == 'https' and
+                bool(parsed.hostname and parsed.hostname.endswith('.r2.cloudflarestorage.com')))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+
+
+def r2_copy(clone, parts, remote):
+    for name, digest, _ in parts:
+        dest = remote.rstrip('/') + '/' + name
+        subprocess.run(['rclone', 'copyto', str(clone / name), dest], check=True, capture_output=True)
+        result = subprocess.run(['rclone', 'cat', dest], check=True, capture_output=True)
+        if hashlib.sha256(result.stdout).hexdigest() != digest:
+            raise RuntimeError('R2 readback checksum mismatch; sources retained')
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--run", action="store_true")
-    ap.add_argument("--only", nargs="+", metavar="REPO/LANE")
-    ap.add_argument("--idle-hours", type=float, default=0, help="only folders nobody touched for H hours (the hourly law uses 24)")
-    a = ap.parse_args()
-    found = [o for o in orphans() if not a.only or "%s/%s" % (o[0], o[1]) in a.only]
-    busy = held()
-    if not found:
-        print("no orphaned worktrees")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--idle-hours', type=float, default=24)
+    parser.add_argument('--only', nargs='+')
+    parser.add_argument('--run', action='store_true')
+    parser.add_argument('--preserve-only', action='store_true', help='preserve to GitHub and vault even if R2 access is unavailable; never release')
+    args = parser.parse_args()
+    held = wip.open_paths()
+    roots, snapshots = [], {}
+    cutoff = (time.time() - args.idle_hours * 3600) * 1e9
+    for path in orphans():
+        if args.only and str(path.relative_to(WT)) not in args.only:
+            continue
+        if wip.inside(held, str(path)) or wip.inside(wip.seat_cwds(), str(path)):
+            continue
+        snap = fingerprint(path)
+        if any(s[2] > cutoff for s in snap.values()):
+            continue
+        roots.append(path); snapshots[path] = snap
+    print('worktree-orphans: %d unreadable idle trees; R2 %s' % (len(roots), 'configured' if r2_ready() else 'unavailable; sources held'), flush=True)
+    if not roots or not args.run:
         return 0
-    stamp = time.strftime("%Y-%m-%d")
-    vault = os.path.join(WS, "_archive", "%s-orphaned-worktrees-%s" % (stamp, MACHINE))
-    store = os.path.join(vault, "orphans.git")
-    free0, done = shutil.disk_usage(WS).free, []
-    for repo, lane, p, gd in found:
-        kib = du_kib(p)
-        if a.idle_hours and time.time() - max(os.lstat(p).st_mtime, os.lstat(os.path.join(p, ".git")).st_mtime) < a.idle_hours * 3600:
-            print("keep   %s/%s  %.2f GiB: touched in the last %g h" % (repo, lane, kib / 1048576, a.idle_hours))
-            continue
-        if any(b == p or b.startswith(p + "/") for b in busy):
-            print("keep   %s/%s  %.2f GiB: a process is inside" % (repo, lane, kib / 1048576))
-            continue
-        print("%s %s/%s  %.2f GiB  (gitdir gone: %s)" % ("vault " if a.run else "would ", repo, lane, kib / 1048576, gd))
-        if not a.run:
-            continue
-        if not os.path.isdir(store):
-            os.makedirs(vault, exist_ok=True)
-            subprocess.run(["git", "init", "-q", "--bare", store], check=True)
-        c, err = vault_one(store, repo, lane, p, gd)
-        if err:
-            print("  KEPT: " + err)
-            continue
-        shutil.rmtree(p)
-        done.append((repo, lane, c, kib))
-        with open(RECEIPTS, "a") as f:
-            f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "what": "orphaned worktree vaulted as a git commit",
-                                "path": os.path.relpath(p, WS), "bytes": kib * 1024,
-                                "why": "git cannot read it: its gitdir %s is gone" % gd,
-                                "proof": "content-identical commit %s at refs/orphans/%s/%s in %s; only rebuildable output not kept"
-                                         % (c, repo, lane, os.path.relpath(store, WS)),
-                                "by": "ESTATE tools/worktree-orphans.py"}) + "\n")
-    if done:
-        new = not os.path.exists(os.path.join(vault, "MANIFEST.md"))
-        with open(os.path.join(vault, "MANIFEST.md"), "a") as f:
-            if new:
-                f.write("# Orphaned worktrees (%s), vaulted by ESTATE\n\n**What:** worktrees whose parent clone was gone, so git "
-                        "could not read them. Each folder's files (tracked, untracked, and ignored files that do not rebuild) are "
-                        "one commit in `orphans.git` under `refs/orphans/<repo>/<lane>`; rebuildable output was left out.\n"
-                        "**Proof:** each folder matched its commit by content before removal (read-tree, update-index --refresh, "
-                        "diff-files: 0 differ, 0 extra).\n**Restore:** `git --git-dir=orphans.git --work-tree=<empty dir> "
-                        "checkout refs/orphans/<repo>/<lane> -- .`\n\n" % MACHINE)
-            for repo, lane, c, kib in done:
-                f.write("- %s/%s  %s  %.2f GiB  (tools/worktree-orphans.py)\n" % (repo, lane, c, kib / 1048576))
-        subprocess.run(["git", "--git-dir=" + store, "gc", "-q", "--prune=now"])
-        print("vaulted %d into %s; free %+.2f GiB" % (len(done), os.path.relpath(vault, WS), (shutil.disk_usage(WS).free - free0) / 2**30))
-    return 0
+    if not r2_ready() and not args.preserve_only:
+        wip.receipt(rule='storage-worktree-orphans', result='blocked: R2 access unavailable; sources retained', trees=len(roots))
+        return 1
+    if not os.path.ismount(VAULT) or not Path(archive.KEY).is_file():
+        raise RuntimeError('external vault or estate identity unavailable')
+    identity = subprocess.run(['age-keygen', '-y', archive.KEY], capture_output=True, text=True, check=True)
+    if identity.stdout.strip() != archive.RECIPIENT:
+        raise RuntimeError('estate decrypt identity mismatch')
+    target = VAULT / 'cold-storage/mini/orphan-evidence' / str(time.time_ns())
+    target.mkdir(parents=True, mode=0o700)
+    wrapper = target / 'publish'; wrapper.mkdir()
+    archive.ARCHIVE = str(WT.parent)
+    seen, parts = archive.build(WT.name, str(wrapper), exclude=REBUILD, roots=roots)
+    full = 'sisodias/siso-evidence-mini-orphans-20261021'
+    head = archive.push(str(wrapper), full, parts, 'unreadable-mini-worktrees', len(seen))
+    clone = target / 'verified'
+    archive.sh('git', 'clone', '-q', 'https://github.com/' + full + '.git', str(clone))
+    if archive.sh('git', 'rev-parse', 'HEAD', cwd=clone).strip() != head:
+        raise RuntimeError('fresh clone head differs')
+    for name, digest, _ in parts:
+        if hashlib.sha256((clone / name).read_bytes()).hexdigest() != digest:
+            raise RuntimeError('fresh clone part checksum differs')
+    if archive.read_back(str(clone), parts) != seen:
+        raise RuntimeError('decrypted tar listing/content differs')
+    remote = os.environ.get('ESTATE_R2_REMOTE', '').rstrip('/') + '/mini-orphans/' + head
+    if r2_ready():
+        r2_copy(clone, parts, remote)
+    receipt = {'rule': 'storage-worktree-orphans', 'head': head, 'repo': full, 'vault': str(target),
+               'entries': len(seen), 'trees': len(roots), 'parts': parts,
+               'verified': 'fresh GitHub clone decrypted/listed: every file SHA256, type, mode, link equal',
+               'r2': remote if r2_ready() else 'BLOCKED: account R2 not enabled; no configured R2 transport', 'released': []}
+    (target / 'MANIFEST.json').write_text(json.dumps(receipt))
+    if not args.preserve_only and r2_ready():
+        for path in roots:
+            if wip.inside(wip.open_paths(), str(path)) or fingerprint(path) != snapshots[path]:
+                continue
+            quarantine = path.with_name(path.name + '.estate-retiring-' + str(os.getpid()))
+            if quarantine.exists():
+                continue
+            path.rename(quarantine)
+            try:
+                if wip.inside(wip.open_paths(), str(quarantine)) or fingerprint(quarantine) != snapshots[path]:
+                    if not path.exists(): quarantine.rename(path)
+                    continue
+                shutil.rmtree(quarantine)
+                receipt['released'].append(str(path))
+            except BaseException:
+                if quarantine.exists() and not path.exists(): quarantine.rename(path)
+                raise
+    (target / 'MANIFEST.json').write_text(json.dumps(receipt))
+    wip.receipt(**receipt)
+    print('worktree-orphans: %d trees, %d entries restored; %d released; %s' % (len(roots), len(seen), len(receipt['released']), receipt['r2']), flush=True)
+    return 0 if r2_ready() else 1
 
 
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == '__main__':
+    raise SystemExit(main())

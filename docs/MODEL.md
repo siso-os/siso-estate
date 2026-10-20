@@ -90,7 +90,7 @@ Each principle is forced by facts above. The mechanism is how it holds without a
 
 | Place | Folder | What it is | Law | Governor |
 |---|---|---|---|---|
-| Agency Island (main) | `SISO_Agency` | the business: `hq/`, `apps/` (products), `clients/` (client compounds), `factory/` | SISO's; client compounds carry the client's law | A0 |
+| Agency Island (main) | `SISO_Agency` | the business: `agency/hq/`, `apps/` (products), `clients/` (client compounds), `agency/factory/` | SISO's; client compounds carry the client's law | A0 |
 | Engine Island | `SISO_Agents` | government and engine works: `agent-zero/`, city hall `siso-estate`, the Guild (`siso-harness-lab`, `siso-skills-hub`), the agent machinery, compute | SISO's | A0 |
 | Library Island | `Great_Library_of_SISO` | knowledge, the catalogue of Works, the banks (the parts depot) | SISO's, public by default | A0 |
 | HALO Island | `HALO_Agency` | Cam Kellman's agency: crm, oracle, kellman, collegebesties, inspiration (compounds; no districts yet) | Cam's (ADR 0007) | CRM (the HALO lead) |

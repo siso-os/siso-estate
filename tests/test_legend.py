@@ -21,7 +21,7 @@ class Legend(unittest.TestCase):
                            ("SISO_Agency/partners/fahmy/clients/melanotresses/code/site", ("fahmy", "melanotresses")),
                            ("SISO_Agency/partners/fahmy/bykonzyard", ("fahmy", None)),
                            ("SISO_Agency/partners/fahmy/clients/bykonz", ("fahmy", "bykonz")),
-                           ("SISO_Agency/clients/lumelle", None), ("SISO_Agency/partners/halo/oracle/core", None)]:
+                           ("SISO_Agency/clients/lumelle", None), ("SISO_Agency/partners/halo/oracle/core", ("halo", None))]:
             self.assertEqual(legend.partner_of(path), want, path)
 
     def test_register_places_partners(self):

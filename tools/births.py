@@ -14,6 +14,9 @@ import argparse, collections, glob, gzip, json, os, re, shlex, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 DISTRICTS = ("SISO_Agency", "SISO_Agents", "Great_Library_of_SISO", "personal")
@@ -322,7 +325,7 @@ def main():
            "lookups_by_month": {m: dict(collections.Counter(k for _, t, k in LOOKUPS if month(t) == m)) for m in sorted({month(t) for _, t, _ in LOOKUPS})},
            "lookups_last_7_days": dict(collections.Counter(k for _, t, k in LOOKUPS if t >= time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 7 * 86400)))),
            "rows": rows}
-    with open(os.path.join(REPO, "machines", a.machine, "births.json"), "w") as f:
+    with open(record_path(REPO, "machines", a.machine, "births.json"), "w") as f:
         json.dump(out, f, indent=1)
     print(f"{len(claude)} Claude + {len(codex)} Codex histories since {a.since} in {time.time() - t0:.0f}s: {len(rows)} births, "
           f"{out['by_verdict']}; sessions {len(sessions)}")

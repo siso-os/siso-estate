@@ -12,6 +12,10 @@ nothing but its own record.
 import argparse, json, os, subprocess, time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import sys
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 SKIP_TOP = ("_reference", "_archive", "_data")
@@ -43,7 +47,7 @@ def main():
     ap.add_argument("--days", type=int, default=30)
     ap.add_argument("--machine", default=os.environ.get("ESTATE_MACHINE", "laptop"))
     a = ap.parse_args()
-    mdir = os.path.join(REPO, "machines", a.machine)
+    mdir = record_path(REPO, "machines", a.machine)
     since = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - a.days * 86400))
     born, road_opened = set(), None
     try:

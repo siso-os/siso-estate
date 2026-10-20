@@ -1,4 +1,6 @@
-# siso-estate: the Estate Manager's house (city hall)
+# estate/core: the Estate Manager's house (city hall)
+
+Canonical code: `sisodias/siso`, module `siso.estate.core`. Edit in the shared main checkout; jobs run landed `live/estate/core`. Mutable machine records, generated reports and inbox live in `~/SISO_Workspace/_data/estate/runtime`, outside Git. The standalone repository is retained history.
 
 **In one line:** The SISO Estate Manager's house: the tools, records, rules (ADRs) and skills that plan, record, check, back up and clean where every SISO repository lives on every machine, behind one `estate` command. District: `SISO_Agents` (`~/SISO_Workspace/SISO_Agents/siso-estate`).
 
@@ -33,3 +35,6 @@ Skills, every `estate` command and the folder layout: `docs/COMMANDS.md`.
 - Secrets scanned on the scan's own exit code before anything leaves; keys in `.credentials/projects/` (0008).
 - Other agents' work is theirs: never stage, reset or stash it (0009). `machines/*/` records are generated.
 - Routine fixes are law in `plan/fix-policies.json`, applied hourly with receipts (0017); owners in `plan/owners.json`.
+
+## Future optional bulk storage allocations
+Before a new optional clone, downloaded corpus, build cache or archive copy, use `estate storage --machine laptop|mini --category source|data|runtime|archive --postcode <producer> --peak-bytes <peak including temporary copies> --growth-buffer-bytes <concurrent growth allowance>`. Honor a nonzero exit: defer that allocation and keep existing agents running. Use the registered producer and the probed system volume; PASS is only a preflight, so recheck under the existing allocator lock immediately before allocating. This does not authorize source/data movement or replace recovery gates. ASTRA recovery preservation and small status receipts remain individually reviewed work. There is no automatic fleet admission hook.

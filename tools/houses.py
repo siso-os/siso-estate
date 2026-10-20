@@ -30,6 +30,9 @@ import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 CRED = os.path.join(WS, ".credentials", "projects")
 OWNER = "sisodias"
 DATE = time.strftime("%Y-%m-%d")
@@ -161,7 +164,7 @@ def index():
 
 
 # ---------- scan ----------
-SCAN_CACHE = os.path.join(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "scan-cache.json")
+SCAN_CACHE = record_path(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "scan-cache.json")
 
 
 def leaks_config(path):
@@ -224,7 +227,10 @@ def _gitleaks_dir(path, cfg):
                           "--report-path", rep, "--exit-code", "1", timeout=3600)
         if code not in (0, 1):  # a scan that did not finish is not a clean scan
             raise SystemExit(f"secret scan failed (exit {code}): {err[-300:]}")
-        return [os.path.relpath(x["File"], path) for x in json.load(open(rep))] if code == 1 else []
+        files = [os.path.relpath(x["File"], path) for x in json.load(open(rep))]
+        if code == 1 and not files:
+            raise SystemExit("secret scan reported findings without file paths; nothing pushed")
+        return files
     finally:
         if os.path.exists(rep):
             os.unlink(rep)
@@ -232,7 +238,9 @@ def _gitleaks_dir(path, cfg):
 
 def flagged_files(path, rng="HEAD"):
     """Tracked files with a secret in them; [] means clean. Raises if any part of the scan did not finish."""
-    if rng != "HEAD":
+    # Only a real working tree supports the tracked-blob fast path. Keep the
+    # scanner's own fail-closed verdict for unavailable paths and history scans.
+    if rng != "HEAD" or not os.path.isdir(path):
         return _flagged_history(path, rng)
     _, out, _ = git(path, "ls-files", "-s", "-z")
     clean = _clean_blobs()
@@ -282,7 +290,10 @@ def _flagged_history(path, rng):
                           "--report-format", "json", "--report-path", rep, "--exit-code", "1", timeout=7200)
         if code not in (0, 1):  # a scan that did not finish is not a clean scan
             raise SystemExit(f"secret scan failed on {rel(path)} (exit {code}): {err[-300:]}")
-        return sorted({x["File"] for x in json.load(open(rep))})
+        files = sorted({x["File"] for x in json.load(open(rep))})
+        if code == 1 and not files:
+            raise SystemExit("secret scan reported findings without file paths; nothing pushed")
+        return files
     finally:
         if os.path.exists(rep):
             os.unlink(rep)
@@ -682,7 +693,8 @@ def retire(folder, why, run, plane=None):
         rec["loose_in_plane"] = {"plane": plane, "files": len(covered),
                                  "restore": f"python3 tools/data-backup.py restore {plane} ~/SISO_Workspace (files come back at their paths)"}
     log(rec)
-    with open(os.path.join(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "retired.jsonl"), "a") as f:
+    os.makedirs(os.path.dirname(record_path(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "retired.jsonl")), exist_ok=True)
+    with open(record_path(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "retired.jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
     place_retired(rec)
     print(f"  retired: {rec['bytes_freed'] / 1024 ** 2:.0f} MB freed; {len(recs)} repos verified on GitHub; keys saved: {len(keys)}"
@@ -692,8 +704,10 @@ def retire(folder, why, run, plane=None):
 
 def place_retired(rec):
     """Keep each retired repo on the map (plan/github-placements.json): no machine checks it out any more."""
-    gp = os.path.join(REPO, "plan", "github-placements.json")
-    doc = json.load(open(gp))
+    seed = os.path.join(REPO, "plan", "github-placements.json")
+    gp = record_path(REPO, "plan", "github-placements.json")
+    doc = json.load(open(gp if os.path.isfile(gp) else seed))
+    os.makedirs(os.path.dirname(gp), exist_ok=True)
     for x in rec["repos"]:
         own, name = owner_of(x.get("url"))
         if own:
@@ -705,7 +719,8 @@ def place_retired(rec):
 
 
 def log(rec):
-    with open(os.path.join(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "houses.jsonl"), "a") as f:
+    os.makedirs(os.path.dirname(record_path(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "houses.jsonl")), exist_ok=True)
+    with open(record_path(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "houses.jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
 
 

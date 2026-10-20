@@ -3,7 +3,8 @@
 plan/launchd/<label>.plist is its source. ~/Library/LaunchAgents holds generated copies.
 
   services.py check                   drift: a job on disk not in the manifest, an installed copy that differs from its
-                                      source, a job not loaded, a program that is gone (exit 1 on any)
+                                      source, a job not loaded, a program that is gone, a last run that
+                                      failed, here or on REMOTES (exit 1 on any)
   services.py adopt LABEL --owner SEAT --what "..." [--run]   take an installed job into the manifest (source = its copy)
   services.py install [LABEL...] [--run]   write the source over the installed copy and reload the job where they differ
 
@@ -11,15 +12,21 @@ A job changes by editing its source here and running install; an owner edits it 
 Retire a job with `estate move ~/Library/LaunchAgents/<label>.plist _archive/<date>-launchd-retired/ --no-link` after
 `launchctl bootout`, then drop it from the manifest.
 """
-import argparse, json, os, plistlib, shutil, subprocess, sys, time
+import argparse, json, os, plistlib, shlex, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 MANIFEST = os.path.join(REPO, "plan", "services.json")
 SOURCES = os.path.join(REPO, "plan", "launchd")
 AGENTS = os.path.expanduser("~/Library/LaunchAgents")
 PREFIX = "com.siso."
 UID = os.getuid()
+# Machines whose com.siso jobs check also reads, over ssh: the Mini's property collectors exited 127 for 15 days
+# (4-19 Oct, its vault had remounted under another name) and nothing on the laptop could see it.
+REMOTES = {"mini": "mac-mini-herdr"}
 
 
 def load_manifest():
@@ -37,9 +44,22 @@ def save_manifest(m):
 
 def loaded():
     """label -> (pid or None, last exit) for every job launchd knows in this session."""
-    out = subprocess.run(["launchctl", "list"], capture_output=True, text=True).stdout.splitlines()[1:]
+    return parse_list(subprocess.run(["launchctl", "list"], capture_output=True, text=True).stdout)
+
+
+def remote_loaded(host):
+    """loaded() on another machine over ssh, or None when it does not answer."""
+    try:
+        r = subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "RemoteCommand=none", host,
+                            "launchctl list"], capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        return None
+    return parse_list(r.stdout) if r.returncode == 0 else None
+
+
+def parse_list(text):
     res = {}
-    for line in out:
+    for line in text.splitlines()[1:]:
         parts = line.split("\t")
         if len(parts) == 3:
             res[parts[2]] = (None if parts[0] == "-" else parts[0], parts[1])
@@ -72,7 +92,13 @@ def same(a, b):
         return False
 
 
-def check():
+def source_for(label, machine="laptop"):
+    """Select the machine override when present, otherwise the shared laptop source."""
+    override = os.path.join(SOURCES, machine, label + ".plist")
+    return override if machine != "laptop" and os.path.exists(override) else os.path.join(SOURCES, label + ".plist")
+
+
+def check(machine="laptop"):
     m = load_manifest()
     known = {s["label"]: s for s in m["services"]}
     live = loaded()
@@ -81,7 +107,7 @@ def check():
         if label not in known:
             problems.append((label, "on disk, not in the manifest (services.py adopt it, or retire it)"))
     for label, s in sorted(known.items()):
-        src = os.path.join(SOURCES, label + ".plist")
+        src = source_for(label, machine)
         dst = os.path.join(AGENTS, label + ".plist")
         if not os.path.exists(src):
             problems.append((label, "in the manifest, no source in plan/launchd"))
@@ -98,6 +124,18 @@ def check():
             problems.append((label, f"its program is gone: {prog}"))
         if label not in live and s.get("state", "on") == "on":
             problems.append((label, "not loaded"))
+        elif s.get("state", "on") == "on" and live[label][0] is None and live[label][1] not in ("0", "-15"):
+            # loaded is not working: the library reader exited 127 every hour for 9 days (10-19 Oct) and nothing said so.
+            # -15 is launchd stopping it (bootout, reload).
+            problems.append((label, f"its last run exited {live[label][1]} (read its log)"))
+    for machine, host in REMOTES.items():
+        jobs = remote_loaded(host)
+        if jobs is None:
+            print(f"services: {machine} did not answer; its jobs are unchecked")
+            continue
+        for label, (pid, last) in sorted(jobs.items()):
+            if label.startswith(PREFIX) and pid is None and last not in ("0", "-15"):
+                problems.append((f"{machine}:{label}", f"its last run exited {last} (read its log on {host})"))
     for label, why in problems:
         print(f"DRIFT {label}: {why}")
     print(f"services: {len(known)} in the manifest, {len(installed())} installed, {len(problems)} drift")
@@ -122,14 +160,14 @@ def adopt(label, owner, what, run):
     return 0
 
 
-def install(labels, run):
+def install(labels, run, machine="laptop"):
     m = load_manifest()
     known = {s["label"] for s in m["services"]}
     for label in labels or sorted(known):
         if label not in known:
             print(f"skip {label}: not in the manifest")
             continue
-        src = os.path.join(SOURCES, label + ".plist")
+        src = source_for(label, machine)
         dst = os.path.join(AGENTS, label + ".plist")
         if same(src, dst):
             continue
@@ -139,6 +177,12 @@ def install(labels, run):
             print(f"plan: install {label}")
             continue
         subprocess.run(["launchctl", "bootout", f"gui/{UID}/{label}"], capture_output=True)
+        # bootout returns before a KeepAlive job's process has exited; bootstrapping then fails with error 5 and
+        # leaves the job unloaded (guest-gateway, 19 Oct). Wait up to 10 s for launchd to let go of the label.
+        for _ in range(50):
+            if subprocess.run(["launchctl", "print", f"gui/{UID}/{label}"], capture_output=True).returncode != 0:
+                break
+            time.sleep(0.2)
         shutil.copy2(src, dst + ".tmp")
         os.replace(dst + ".tmp", dst)
         r = subprocess.run(["launchctl", "bootstrap", f"gui/{UID}", dst], capture_output=True, text=True)
@@ -157,7 +201,7 @@ def ports():
     known = {**reg.get("machine", {}), **reg.get("ports", {})}
     ranges = [(tuple(map(int, k.split("-"))), v) for k, v in reg.get("ranges", {}).items() if not k.startswith("_")]
     try:
-        running = json.load(open(os.path.join(REPO, "machines", os.environ.get("SISO_MACHINE") or ("laptop" if sys.platform == "darwin" else os.uname().nodename), "running.json")))
+        running = json.load(open(record_path(REPO, "machines", os.environ.get("SISO_MACHINE") or ("laptop" if sys.platform == "darwin" else os.uname().nodename), "running.json")))
     except (OSError, ValueError):
         running = {}
     out = subprocess.run(["lsof", "-nP", "-iTCP", "-sTCP:LISTEN"], capture_output=True, text=True).stdout
@@ -168,6 +212,20 @@ def ports():
             continue
         port = f[-2].rsplit(":", 1)[-1]
         by.setdefault(port, {})[f[1]] = {"cmd": f[0], "addr": f[-2].rsplit(":", 1)[0]}
+    # Serena allocates each dashboard from 24282 upward, taking the next free port.
+    # Identify its actual CLI processes rather than reserving a range for any server.
+    serena_pids = set()
+    ps = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True)
+    for line in ps.stdout.splitlines() if ps.returncode == 0 else []:
+        try:
+            pid, command = line.strip().split(None, 1)
+            args = shlex.split(command)
+        except ValueError:
+            continue
+        if (len(args) >= 3 and os.path.basename(args[0]).lower().startswith("python")
+                and args[1] == os.path.expanduser("~/.local/bin/serena")
+                and args[2] == "start-mcp-server"):
+            serena_pids.add(pid)
     rows, collisions, unreg = [], [], []
     for port in sorted(by, key=int):
         procs = by[port]
@@ -177,6 +235,9 @@ def ports():
             reg_as = next((v["service"] + " (range)" for (lo, hi), v in ranges if lo <= int(port) <= hi), None)
         if not reg_as:                              # started by `estate run`: named by its project
             reg_as = next((f"estate run: {r['project']}" for r in running.values() if r["port"] == int(port)), None)
+        if (not reg_as and int(port) >= 24282 and set(procs) <= serena_pids
+                and all(v["addr"] in ("127.0.0.1", "[::1]") for v in procs.values())):
+            reg_as = "Serena per-instance dashboard (verified CLI, loopback)"
         if not reg_as and int(port) >= EPHEMERAL:
             reg_as = "ephemeral (OS-assigned)"      # CDP, socks tunnels: handed out by the OS, never registered
         row = {"port": int(port), "pids": sorted(procs, key=int), "cmds": cmds,
@@ -188,7 +249,7 @@ def ports():
         rows.append(row)
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "listening": rows,
            "collisions": [r["port"] for r in collisions], "unregistered_dev_servers": [r["port"] for r in unreg]}
-    with open(os.path.join(REPO, "machines", os.environ.get("SISO_MACHINE") or ("laptop" if sys.platform == "darwin" else os.uname().nodename), "ports.json"), "w") as fh:
+    with open(record_path(REPO, "machines", os.environ.get("SISO_MACHINE") or ("laptop" if sys.platform == "darwin" else os.uname().nodename), "ports.json"), "w") as fh:
         json.dump(rec, fh, indent=1)
     for r in rows:
         tag = "COLLISION" if r in collisions else ("UNREGISTERED" if r in unreg else ("ok" if r["registered"] else "-"))
@@ -204,16 +265,17 @@ def main():
     ap.add_argument("--owner")
     ap.add_argument("--what")
     ap.add_argument("--run", action="store_true")
+    ap.add_argument("--machine", default=os.environ.get("ESTATE_MACHINE", "laptop"))
     a = ap.parse_args()
     if a.cmd == "check":
-        return check()
+        return check(a.machine)
     if a.cmd == "ports":
         return ports()
     if a.cmd == "adopt":
         if len(a.labels) != 1 or not a.owner or not a.what:
             raise SystemExit("adopt LABEL --owner SEAT --what '...'")
         return adopt(a.labels[0], a.owner, a.what, a.run)
-    return install(a.labels, a.run)
+    return install(a.labels, a.run, a.machine)
 
 
 if __name__ == "__main__":

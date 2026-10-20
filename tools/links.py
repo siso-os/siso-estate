@@ -8,6 +8,9 @@ tree (the repo's owner fixes them, estate never edits a vendor tree); `live` is 
 import os, sys, json, time, socket
 WS = os.path.expanduser("~/SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 PRUNE = {"node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt", ".turbo", ".cache", "target", ".git",
          ".pnpm-store", ".gradle", "Pods", ".mypy_cache", ".pytest_cache", ".ruff_cache", "site-packages", ".tox",
          ".parcel-cache", ".svelte-kit", ".expo", ".vercel", ".wrangler", "bower_components", ".yarn", ".npm",
@@ -83,7 +86,7 @@ def moves_map():
     """old absolute prefix -> new absolute prefix, from recorded moves and the retired-link table"""
     m = {}
     try:
-        for line in open(os.path.join(REPO, "machines", machine(), "moves.jsonl")):
+        for line in open(record_path(REPO, "machines", machine(), "moves.jsonl")):
             r = json.loads(line)
             if r.get("src") and r.get("dst"):
                 m[r["src"].rstrip("/")] = r["dst"].rstrip("/")
@@ -117,7 +120,7 @@ def repair(broken):
         os.symlink(new, full)
         fixed.append({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "kind": "symlink", "path": p, "old": t, "new": new})
     if fixed:
-        with open(os.path.join(REPO, "machines", machine(), "repoints.jsonl"), "a") as f:
+        with open(record_path(REPO, "machines", machine(), "repoints.jsonl"), "a") as f:
             for r in fixed:
                 f.write(json.dumps(r) + "\n")
     return fixed
@@ -132,7 +135,7 @@ if __name__ == "__main__":
         b = classify(scan()) if fixed else b
     n = {k: sum(1 for x in b if x["kind"] == k) for k in ("live", "owned", "vendor", "ignored")}
     out = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "seconds": round(time.time() - t0, 1), "counts": n, "broken": b}
-    with open(os.path.join(REPO, "machines", machine(), "links.json"), "w") as f:
+    with open(record_path(REPO, "machines", machine(), "links.json"), "w") as f:
         json.dump(out, f, indent=1)
     if "--list" in sys.argv:
         for x in b:

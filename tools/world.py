@@ -9,6 +9,7 @@ Regions follow docs/LEGEND.md (the business), never the folder tree. Reads only 
 import collections, hashlib, json, math, os, pathlib, re, subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+from estate_state import record_path
 WS = ROOT.parent.parent
 HOME = pathlib.Path.home()
 
@@ -140,7 +141,7 @@ def main():
     reg = load("machines/register.json", {})
     edges = load("plan/planner/edges.json", {"edges": []})
     city = load(str(WS / "_data/estate/city/city.json"), {})
-    hist = [json.loads(l) for l in (ROOT / "machines/laptop/score-history.jsonl").read_text().splitlines() if l.strip()]
+    hist = [json.loads(l) for l in (pathlib.Path(record_path(ROOT, "machines/laptop/score-history.jsonl"))).read_text().splitlines() if l.strip()]
     act = city.get("activity", {})
     COMPOUND_SIZE.update(collections.Counter(b.get("compound") for b in reg.get("buildings", [])))
     lit_repos = {s.get("repo") for s in city.get("servers", []) if s.get("repo")}

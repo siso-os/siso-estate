@@ -9,6 +9,7 @@ Brief: plan/planner/card-brief.md. It stops when the laptop is overloaded (load 
 import argparse, concurrent.futures as cf, datetime, json, os, pathlib, re, subprocess, time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+from estate_state import record_path
 WS = ROOT.parent.parent
 CARDS = ROOT / "plan/planner/cards"
 LOG = ROOT / "plan/planner/run.jsonl"
@@ -18,7 +19,7 @@ TOOLS = "Read,Grep,Glob,Bash(ls:*),Bash(git log:*),Bash(cat:*),Bash(grep:*),Bash
 
 
 def buildings(everything):
-    reg = json.loads((ROOT / "machines/register.json").read_text())
+    reg = json.loads((pathlib.Path(record_path(ROOT, "machines/register.json"))).read_text())
     life = ("active", "warm", "dormant") + (("archived", "dark", "unscored") if everything else ())
     return [b["path"] for b in reg["buildings"] if b.get("provenance") in ("ours", "adopted", "client")
             and "laptop" in (b.get("built_on") or []) and b.get("lifecycle") in life and (WS / b["path"]).is_dir()

@@ -6,6 +6,7 @@
 Everything is a temp directory: the workspace, the main checkout's register, the moves and the retired-path list.
 """
 import json, os, shutil, tempfile, unittest
+from unittest.mock import patch
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
@@ -15,6 +16,11 @@ import docs_check
 class DocsCheck(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="docs-check-")
+        # CI's TMPDIR can be ignored inside the city repo. These fake buildings
+        # must not inherit its ignore rules; real fixture repos still work.
+        boundary = patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": os.path.dirname(self.tmp)})
+        boundary.start()
+        self.addCleanup(boundary.stop)
         self.ws = os.path.join(self.tmp, "ws")
         self.main = os.path.join(self.ws, "SISO_Agents", "siso-estate")
         self.machine = "laptop"

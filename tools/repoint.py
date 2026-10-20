@@ -14,13 +14,17 @@ import argparse, json, os, re, shutil, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+import sys
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 BACKUP = os.path.join(HOME, "SISO_Workspace", "_archive", "2026-09-23-estate-repoint")
 
 
 def chained(machine):
     """Moves in order, each dst followed through later moves (A->B then B/x->C gives A/x->C too)."""
-    ms = [(m["src"], m["dst"]) for m in map(json.loads, open(os.path.join(REPO, "machines", machine, "moves.jsonl")))
+    ms = [(m["src"], m["dst"]) for m in map(json.loads, open(record_path(REPO, "machines", machine, "moves.jsonl")))
           if "src" in m and "dst" in m and not m.get("why", "").startswith("empty")]  # github-rename/map-placement use from/to
     out = []
     for i, (s, d) in enumerate(ms):
@@ -87,7 +91,7 @@ def main():
     a = ap.parse_args()
     prs = pairs(a.machine, a.relative, [os.path.abspath(os.path.expanduser(x)).rstrip("/") for x in a.src or []])
     os.makedirs(BACKUP, exist_ok=True)
-    log = open(os.path.join(REPO, "machines", a.machine, "repoints.jsonl"), "a")
+    log = open(record_path(REPO, "machines", a.machine, "repoints.jsonl"), "a")
     stamp = time.strftime("%Y%m%dT%H%M%S")
     for f in a.files:
         f = os.path.expanduser(f)

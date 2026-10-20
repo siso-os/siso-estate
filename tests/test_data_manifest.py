@@ -175,6 +175,12 @@ class Admission(unittest.TestCase):
         ok, token = db.admit_upload(self.plane, 3_000_000_000)
         self.assertTrue(ok)
         self.assertFalse(db.admit_upload(self.plane, 2_000_000_000)[0])
+        db.release_reservation(token, retain_remote=True)
+        # Attempted remote writes stay charged even across a REST refresh.
+        # Only explicit reconciliation may release that retained upper bound.
+        self.assertFalse(db.admit_upload(self.plane, 2_000_000_000)[0])
+        Path(db._rest_cache_path()).unlink()
+        self.assertFalse(db.admit_upload(self.plane, 2_000_000_000)[0])
         db.release_reservation(token)
         self.assertTrue(db.admit_upload(self.plane, 2_000_000_000)[0])
 

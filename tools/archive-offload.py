@@ -13,21 +13,25 @@ repos. Why verify from a fresh clone: on 6 Oct the plane producer was found to l
 macOS inputs. Restore: `archive-offload.py restore FOLDER DEST` (needs ~/.config/siso/age/estate-backup.key).
 GitHub is the sync plane (Shaan, 24 Sep); HALO never leaves Cam's repo (ADR 0007). Receipts: machines/<m>/archive-offload.jsonl.
 """
-import argparse, hashlib, io, json, os, re, shutil, socket, stat, subprocess, sys, tarfile, tempfile, time
+import argparse, hashlib, io, itertools, json, os, re, shutil, socket, stat, subprocess, sys, tarfile, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.expanduser("~/SISO_Workspace")
 ARCHIVE = os.path.join(WS, "_archive")
 WORK = os.path.join(WS, "_data", "archive-offload-work")
 OWNER = "sisodias"
 KEY = os.path.expanduser("~/.config/siso/age/estate-backup.key")
 RECIPIENT = open(os.path.join(REPO, "plan", "age-recipient.txt")).read().split()[0]
-PART = 95 * 1024 * 1024
+PART = 90_000_000  # below GitHub's limit and the estate's 95 MB ceiling
 PUSH_BATCH = 4  # parts per push: ~380 MB (8 Oct: a 1.1 GB push over HTTPS timed out with HTTP 408)
 NEVER = re.compile(r"halo|oracle|cam-|kellman|fahmy|bykonz|whatsapp|life|personal", re.I)
-MACHINE = "laptop" if socket.gethostname().startswith("shaans-MacBook") else socket.gethostname().split(".")[0]
-RECEIPTS = os.path.join(REPO, "machines", MACHINE, "archive-offload.jsonl")
+_HOST = os.environ.get("ESTATE_MACHINE") or socket.gethostname()
+MACHINE = "laptop" if _HOST.lower().startswith("shaans-macbook") else "mini" if "mini" in _HOST.lower() else _HOST.split(".")[0]
+RECEIPTS = record_path(REPO, "machines", MACHINE, "archive-offload.jsonl")
 VAULT_HOST = "mini-fast"  # the second copy: a bare mirror on the mini's external USB vault drive, as the image bank does
 VAULT_DIR = "/Volumes/SISO-STORAGE-VAULT/SISO-VAULT/SISO_Workspace/_data/backup-repos/archive-offload"
 
@@ -40,7 +44,10 @@ def mirror(full, head):
               f"if [ -d {dest} ]; then git -C {dest} fetch -q --prune origin; "
               f"else git clone -q --mirror https://github.com/{full}.git {dest}; fi; "
               f"git -C {dest} fsck --connectivity-only --no-progress 1>&2; git -C {dest} rev-parse refs/heads/main")
-    got = (sh("ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", VAULT_HOST, remote).split() or [""])[-1]
+    if MACHINE == "mini":
+        got = (sh("/bin/sh", "-c", remote).split() or [""])[-1]
+    else:
+        got = (sh("ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", VAULT_HOST, remote).split() or [""])[-1]
     if got != head:
         raise SystemExit(f"{full}: mini vault mirror head {got[:10]} != {head[:10]}; nothing released")
     return f"{VAULT_HOST}:{dest}"
@@ -62,6 +69,15 @@ def why_not(folder):
         return "HALO / private: never leaves (ADR 0007)"
     if os.path.exists(os.path.join(ARCHIVE, folder + ".OFFLOADED.md")):
         return "already offloaded"
+    source = os.path.join(ARCHIVE, folder)
+    for root, dirs, files in os.walk(source):
+        if any(NEVER.search(name) for name in dirs + files):
+            return "protected contents: held in data plane"
+        if ".git" in dirs or ".git" in files:
+            result = subprocess.run(["git", "-C", root, "remote", "-v"], capture_output=True, text=True)
+            if result.returncode or NEVER.search(result.stdout):
+                return "protected or unreadable repository provenance"
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "target", ".venv")]
     return None
 
 
@@ -85,7 +101,7 @@ def entry(ti):
             "size": ti.size if ti.isfile() else 0, "link": ti.linkname if ti.issym() else ""}
 
 
-def build(folder, out_dir):
+def build(folder, out_dir, exclude=(), roots=None):
     """Write the encrypted parts; return {relative path: entry with sha256} for every entry read."""
     src = os.path.join(ARCHIVE, folder)
     zst = subprocess.Popen(["taskpolicy", "-b", "zstd", "-q", "-T2", "-10", "-c"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -109,7 +125,9 @@ def build(folder, out_dir):
     t.start()
     seen = {}
     with tarfile.open(fileobj=zst.stdin, mode="w|", format=tarfile.PAX_FORMAT) as tar:
-        for root, dirs, files in os.walk(src, followlinks=False):
+        walk = itertools.chain.from_iterable(os.walk(p, followlinks=False) for p in roots) if roots is not None else os.walk(src, followlinks=False)
+        for root, dirs, files in walk:
+            dirs[:] = [d for d in dirs if d not in exclude]
             dirs.sort()
             for name in [None] + sorted(files) + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
                 path = root if name is None else os.path.join(root, name)
@@ -168,6 +186,12 @@ def push(repo_dir, full, parts, folder, files):
     if subprocess.run(["gh", "repo", "view", full], capture_output=True).returncode:
         sh("gh", "repo", "create", full, "--private", "--description", f"SISO estate vault: _archive/{folder} (encrypted)")
     sh("git", "remote", "add", "origin", f"https://github.com/{full}.git", cwd=repo_dir)
+    remote = sh("git", "ls-remote", "origin", "refs/heads/main", cwd=repo_dir).split()
+    if remote:
+        # Append a replacement snapshot without rewriting the previous backup.
+        sh("git", "fetch", "-q", "--depth=1", "origin", "main", cwd=repo_dir)
+        sh("git", "update-ref", "refs/heads/main", "FETCH_HEAD", cwd=repo_dir)
+        sh("git", "read-tree", "--empty", cwd=repo_dir)
     sh("git", "config", "http.postBuffer", "524288000", cwd=repo_dir)
     batches = [parts[i:i + PUSH_BATCH] for i in range(0, len(parts), PUSH_BATCH)] or [[]]
     for i, batch in enumerate(batches):
@@ -186,7 +210,33 @@ def push(repo_dir, full, parts, folder, files):
     return sh("git", "rev-parse", "HEAD", cwd=repo_dir).strip()
 
 
-def run(folder, go):
+def source_manifest(folder, exclude=(), roots=None):
+    """Match the encrypted tar's content without copying source data into git."""
+    src = os.path.join(ARCHIVE, folder)
+    seen = {}
+    with tarfile.open(fileobj=io.BytesIO(), mode="w") as tar:
+        walk = itertools.chain.from_iterable(os.walk(p, followlinks=False) for p in roots) if roots is not None else os.walk(src, followlinks=False)
+        for root, dirs, files in walk:
+            dirs[:] = [d for d in dirs if d not in exclude]
+            dirs.sort()
+            for name in [None] + sorted(files) + [d for d in dirs if os.path.islink(os.path.join(root, d))]:
+                path = root if name is None else os.path.join(root, name)
+                if not (os.path.isfile(path) or os.path.isdir(path) or os.path.islink(path)):
+                    continue
+                rel = os.path.relpath(path, ARCHIVE)
+                ti = tar.gettarinfo(path, arcname=rel)
+                value = entry(ti)
+                if ti.isfile():
+                    h = hashlib.sha256()
+                    with open(path, 'rb') as f:
+                        for chunk in iter(lambda: f.read(1 << 20), b''):
+                            h.update(chunk)
+                    value['sha256'] = h.hexdigest()
+                seen[rel] = value
+    return seen
+
+
+def run(folder, go, refreshed=False):
     why = why_not(folder)
     src = os.path.join(ARCHIVE, folder)
     if why or not os.path.isdir(src) or os.path.islink(src):
@@ -197,25 +247,37 @@ def run(folder, go):
     if not go:
         print(f"would offload {folder} ({kib / 1048576:.2f} GiB) -> {full}")
         return
-    if subprocess.run(["gh", "repo", "view", full], capture_output=True).returncode == 0 and \
-            subprocess.run(["gh", "api", f"repos/{full}/commits?per_page=1"], capture_output=True).returncode == 0:
-        raise SystemExit(f"{full} already has commits: check it by hand before anything else")  # an empty one is reused
+    if not os.path.isfile(KEY):
+        raise SystemExit("archive-offload: held; decrypt identity missing (nothing uploaded or released)")
+    identity = subprocess.run(["age-keygen", "-y", KEY], capture_output=True, text=True)
+    if identity.returncode or identity.stdout.strip() != RECIPIENT:
+        raise SystemExit("archive-offload: held; decrypt identity does not match recipient")
+    existing = (subprocess.run(["gh", "repo", "view", full], capture_output=True).returncode == 0 and
+                subprocess.run(["gh", "api", f"repos/{full}/commits?per_page=1"], capture_output=True).returncode == 0)
     # the temporary copy can be as big as the folder: keep 10 GiB free beyond it (8 Oct 18:49: free hit 6.7 GiB, laptop hung)
     if shutil.disk_usage(WS).free < kib * 1024 + 10 * 2**30:
         raise SystemExit(f"hold {folder}: needs {kib / 1048576 + 10:.1f} GiB free, have {shutil.disk_usage(WS).free / 2**30:.1f}")
     os.makedirs(WORK, exist_ok=True)
     t0, free0 = time.time(), shutil.disk_usage(WS).free
-    repo_dir = tempfile.mkdtemp(prefix=repo_name(folder) + "-", dir=WORK)
-    try:  # the parts are a temporary copy: never leave them behind on the laptop
-        seen, parts = build(folder, repo_dir)
-        head = push(repo_dir, full, parts, folder, len(seen))
-    finally:
-        shutil.rmtree(repo_dir, ignore_errors=True)
+    parts = None
+    if existing:
+        seen = source_manifest(folder)
+        head = None
+    else:
+        repo_dir = tempfile.mkdtemp(prefix=repo_name(folder) + "-", dir=WORK)
+        try:
+            seen, parts = build(folder, repo_dir)
+            head = push(repo_dir, full, parts, folder, len(seen))
+        finally:
+            shutil.rmtree(repo_dir, ignore_errors=True)
     clone = tempfile.mkdtemp(prefix="verify-", dir=WORK)
     try:
         sh("git", "clone", "-q", f"https://github.com/{full}.git", clone)
         remote_head = sh("git", "rev-parse", "HEAD", cwd=clone).strip()
         sums = dict(reversed(l.split("  ")) for l in open(os.path.join(clone, "SHA256SUMS")).read().splitlines())
+        if parts is None:
+            parts = [(name, digest, os.path.getsize(os.path.join(clone, name))) for name, digest in sums.items()]
+            head = remote_head
         for p, h, _ in parts:
             with open(os.path.join(clone, p), "rb") as f:
                 if hashlib.sha256(f.read()).hexdigest() != h or sums.get(p) != h:
@@ -224,6 +286,18 @@ def run(folder, go):
     finally:
         shutil.rmtree(clone, ignore_errors=True)
     bad = [k for k in set(seen) | set(got) if seen.get(k) != got.get(k)]
+    if bad and existing and not refreshed:
+        # The local waiting-room copy is authoritative. Preserve the old remote
+        # snapshot in history, publish the newer source, then verify it afresh.
+        repo_dir = tempfile.mkdtemp(prefix="refresh-", dir=WORK)
+        try:
+            newer, replacement = build(folder, repo_dir)
+            if newer != seen or source_manifest(folder) != seen:
+                raise SystemExit("archive-offload: held; source changed before refresh")
+            push(repo_dir, full, replacement, folder, len(newer))
+        finally:
+            shutil.rmtree(repo_dir, ignore_errors=True)
+        return run(folder, go, refreshed=True)
     if remote_head != head or bad:
         raise SystemExit(f"{folder}: NOT released: head {remote_head == head}, {len(bad)} entries differ, e.g. {bad[:3]}")
     vault = None  # GitHub is the store (Shaan, 8 Oct: the mini mirror was "way too much extra"); `mirror-backfill` adds one
@@ -239,9 +313,12 @@ def run(folder, go):
                 f"{rec['entries']} entries ({rec['files']} files) verified from a fresh clone before release.\n\n"
                 f"Restore: `python3 ~/SISO_Workspace/SISO_Agents/siso-estate/tools/archive-offload.py restore {folder} "
                 f"~/SISO_Workspace/_archive/` (needs ~/.config/siso/age/estate-backup.key).\n")
+    if source_manifest(folder) != seen:
+        raise SystemExit("archive-offload: held; source changed during verification")
     shutil.rmtree(src)
     rec["free_gain_kib"] = (shutil.disk_usage(WS).free - free0) // 1024
     rec["seconds"] = int(time.time() - t0)
+    os.makedirs(os.path.dirname(RECEIPTS), exist_ok=True)
     with open(RECEIPTS, "a") as f:
         f.write(json.dumps(rec) + "\n")
     print(f"offloaded {folder}: {len(parts)} parts, {rec['entries']} entries verified, free {rec['free_gain_kib'] / 1048576:+.2f} GiB, {rec['seconds']} s")

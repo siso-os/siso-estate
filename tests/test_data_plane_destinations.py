@@ -10,8 +10,9 @@ PLAN = Path(__file__).resolve().parents[1] / "plan" / "data-planes.json"
 class PlaneDestinations(unittest.TestCase):
     def test_every_plane_has_isolated_storage_destination(self):
         planes = json.loads(PLAN.read_text())["planes"]
-        self.assertEqual(len(planes), 39)
-        self.assertEqual(len({p["name"] for p in planes}), 39)
+        # The count grows as planes are added (39 on 16 Oct, 51 on 19 Oct); names must stay unique.
+        self.assertGreaterEqual(len(planes), 39)
+        self.assertEqual(len({p["name"] for p in planes}), len(planes))
         for plane in planes:
             with self.subTest(plane=plane["name"]):
                 match = re.fullmatch(r"github:([A-Za-z0-9-]+)/([A-Za-z0-9_.-]+)(?:#[^/\s]+)?", plane["backend"])

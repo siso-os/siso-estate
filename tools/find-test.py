@@ -13,6 +13,10 @@ from concurrent.futures import ThreadPoolExecutor
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import sys
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 Q = [  # (question, the path the answer must name, relative to ~/SISO_Workspace)
     ("Where is Oracle streaming's front door (the one folder to start any Oracle work in)?", "SISO_Agency/partners/halo/oracle"),  # 26 Sep: was "the operator app's front door", which operator-app/ answers truly
     ("Where does a brand-new client's work go?", "SISO_Agency/clients"),
@@ -66,7 +70,7 @@ def target(want):
 
 def shown(want):
     return want if want.startswith("~/") else "~/SISO_Workspace/" + want
-# a container question: an answer naming the right thing inside it is right (the Software Factory IS the repo in factory/)
+# a container question: an answer naming the right thing inside it is right (the Software Factory IS the repo in agency/factory/)
 INSIDE_OK = {"SISO_Agency/clients", ".credentials/projects", "SISO_Agency/partners/fahmy/_intake", "_archive", "SISO_Agency/factory",
              "SISO_Agency/partners/halo/kellman", "Great_Library_of_SISO/banks/siso-repo-bank", "_data/worktrees",
              "Great_Library_of_SISO/banks/siso-shell", "SISO_Agency/apps/siso-internal-labs", "SISO_Agency/apps",
@@ -138,7 +142,7 @@ def main():
     ap.add_argument("--only")
     ap.add_argument("--rescore", action="store_true", help="score the saved answers again (after a key change) without asking")
     a = ap.parse_args()
-    p = os.path.join(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"),
+    p = record_path(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"),
                      "find-test" + ("" if a.harness == "claude" else f"-{a.harness}") + ("" if a.start == "home" else f"-{a.start}") + ".json")
     if a.rescore:
         old = json.load(open(p))

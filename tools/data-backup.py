@@ -46,6 +46,9 @@ _source_spec.loader.exec_module(safe_source)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 OWNER = "sisodias"
@@ -145,7 +148,7 @@ def cmd_plan(machine):
                     "unclassified_large_files": len(regen), "unclassified_large_bytes": sum(r["bytes"] for r in regen),
                     "status": "held" if regen else "planned"})
         print(f"{pl['name']:<22} include {len(inc):>7} files {size/1e9:6.2f} GB | unclassified large {len(regen):>4} files {sum(r['bytes'] for r in regen)/1e9:6.2f} GB")
-    with open(os.path.join(REPO, "machines", machine, "data-plan.json"), "w") as output:
+    with open(record_path(REPO, "machines", machine, "data-plan.json"), "w") as output:
         json.dump({"machine": machine, "planned_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "planes": out}, output, indent=1)
 
 
@@ -362,14 +365,9 @@ def release_reservation(token, retain_remote=False):
             state[token]["state"] = "remote-write-attempted"
             state[token]["local_peak_bytes"] = 0
         else:
-            record = state.pop(token, None)
-            cache = _load_rest_cache()
-            if record and "inventory" in cache:
-                for item in cache["inventory"]["value"].get("repositories", []):
-                    if item["repo"] == record["repo"]:
-                        item["git_objects_bytes"] += record["bytes"]
-                cache["inventory"]["value"]["observed_bytes"] += record["bytes"]
-                _save_rest_cache(cache)
+            # No remote write was attempted: releasing admission must not turn the
+            # unused upper bound into stored bytes in the cached inventory.
+            state.pop(token, None)
         with open(path, "w") as output:
             json.dump(state, output)
 
@@ -430,7 +428,7 @@ def admit_upload(pl, planned_bytes, local_peak_bytes=None, machine="laptop", str
                 return False, "concurrent aggregate staging reservation exceeds 1 GB cap"
             floor = STREAM_FLOOR
         else:
-            floor = 60 * 1024 ** 3 if machine == "mini" else 100_000_000_000
+            floor = 15 * 1024 ** 3  # the estate pause line (storage-guard HOLD_GIB); 60/100 GiB are cleaning targets
         probe = WS if os.path.exists(WS) else os.path.dirname(path)
         if shutil.disk_usage(probe).free - reserved_local - local_peak_bytes < floor:
             return False, "local allocation would cross the preserved free-space floor"
@@ -506,8 +504,8 @@ def _run_plane(pl, machine, stream_profile=None, max_streams=1):
     import hashlib
     fp = hashlib.sha256((backend + "\n" + ("" if pl.get("encrypt", True) else "plain\n")).encode()   # switching a plane to plain re-pushes it
                         + "\n".join(f"{p}\t{os.path.getsize(p)}\t{int(os.path.getmtime(p))}" for p in sorted(inc) if os.path.exists(p)).encode()).hexdigest()
-    last = (json.load(open(os.path.join(REPO, "machines", machine, "data-backup.json"))).get("results", {}).get(pl["name"], {})
-            if os.path.exists(os.path.join(REPO, "machines", machine, "data-backup.json")) else {})
+    last = (json.load(open(record_path(REPO, "machines", machine, "data-backup.json"))).get("results", {}).get(pl["name"], {})
+            if os.path.exists(record_path(REPO, "machines", machine, "data-backup.json")) else {})
     # A new omitted database does not change the included-file fingerprint. Hold before the
     # unchanged shortcut as well as before staging/uploading; report counts, never private names.
     if regen:
@@ -544,6 +542,10 @@ def _run_plane(pl, machine, stream_profile=None, max_streams=1):
     upload_started = False
     stage = os.path.join(WS, "_data", "estate-stage", pl["name"] + "-" + run_id)
     try:
+        # Recheck privacy for this upload even when admission reused a cached boundary.
+        code, private, _ = sh("gh", "api", f"repos/{owner}/{name}", "--jq", ".private", timeout=120)
+        if code != 0 or private != "true":
+            return {"plane": pl["name"], "status": "held", "held_reason": "backup destination privacy could not be verified"}
         os.makedirs(stage)
         # consistent copies of SQLite databases
         files = []
@@ -1264,7 +1266,7 @@ def _cmd_restore(plane, dest, machine="laptop", ref=None):
     pl = next((p for p in planes() if p["name"] == plane), {})
     name = pl.get("repo", f"siso-data-{plane}")
     owner = pl.get("owner", OWNER)
-    receipt_path = os.path.join(REPO, "machines", machine, "data-backup.json")
+    receipt_path = record_path(REPO, "machines", machine, "data-backup.json")
     last = json.load(open(receipt_path)).get("results", {}).get(plane, {}) if os.path.exists(receipt_path) else {}
     candidates = [last] + list(reversed(last.get("recovery_references", [])))
     attempted = False
@@ -1376,7 +1378,7 @@ def main():
     if a.cmd == "restore":
         return cmd_restore(a.args[0], a.args[1], a.machine, a.ref)
     names = [p["name"] for p in planes(a.machine) if not p.get("manual")] if a.args == ["all"] else a.args
-    res_path = os.path.join(REPO, "machines", a.machine, "data-backup.json")
+    res_path = record_path(REPO, "machines", a.machine, "data-backup.json")
     os.makedirs(os.path.dirname(res_path), exist_ok=True)
     known = {p["name"] for p in planes()}
     if not names or set(names) - known:

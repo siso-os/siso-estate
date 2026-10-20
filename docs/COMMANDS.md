@@ -53,6 +53,15 @@ Moved here from AGENTS.md on 26 Sep 2026, word for word, so the door stays under
 | `plan/` | goal, placements (`github-placements.json`), machines registry, data planes, report builders, coordination log |
 | `.agents/` | handoff, queue, Shaan's words, project memory |
 
+## Storage allocation preflight
+
+`estate storage` reads the existing fleet and estate register without probing, scanning payloads or writing history. Example for a proposed 2 GB optional runtime allocation with 5 GB of protected growth allowance:
+
+```sh
+estate storage --machine mini --category runtime --postcode siso-estate --peak-bytes 2000000000 --growth-buffer-bytes 5000000000
+```
+
+Exit 0 is a capacity/provenance preflight PASS; exit 1 is HOLD; exit 2 is invalid/unavailable input and also HOLD. Callers must stop the proposed allocation on either nonzero result. The fixed reserve is 100 decimal GB. Fleet samples must be at most five minutes old and register metadata at most 24 hours old. `--previous-stdin` compares one earlier sanitized output and raises the growth allowance to cover observed free-space loss. Keep only a bounded current/previous pair if recording checks. Categories describe the proposed allocation, not measured existing directory totals. No automatic allocator hook, source movement, private-data permission, reservation or restore proof is implied.
 ## Verified data blocks (16 October 2026)
 
 - `estate data push <plane>`: configured storage backend, access and capacity admission, independent remote restore verification. `run` remains an alias.

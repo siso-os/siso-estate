@@ -20,8 +20,8 @@ def main():
     ap.add_argument("--max", type=int, default=3, help="folders per run")
     ap.add_argument("--run", action="store_true")
     a = ap.parse_args()
-    if not socket.gethostname().startswith("shaans-MacBook"):
-        print("archive-sweep: laptop only"); return 0
+    machine = os.environ.get("ESTATE_MACHINE") or socket.gethostname().lower()
+    os.environ["ESTATE_MACHINE"] = "laptop" if machine.startswith("shaans-macbook") else machine
     go = ["--run"] if a.run else []
     out = subprocess.run([sys.executable, TOOL, "chats", "--days", "14", *go], capture_output=True, text=True, timeout=3600)
     print((out.stdout + out.stderr).strip().splitlines()[-1:] and (out.stdout + out.stderr).strip().splitlines()[-1] or "chats: nothing")

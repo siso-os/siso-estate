@@ -17,6 +17,9 @@ import argparse, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.join(os.path.expanduser("~"), "SISO_Workspace")
 HOME = os.path.expanduser("~")
 MAIN = os.path.join(WS, "SISO_Agents", "siso-estate")  # the main checkout: the register lives there, not in a room
@@ -260,7 +263,7 @@ def main():
     a = ap.parse_args()
     d = record(a.machine)
     if not a.check:  # --check reports; only a real run leaves the record
-        out = os.path.join(REPO, "machines", a.machine, "docs-check.json")
+        out = record_path(REPO, "machines", a.machine, "docs-check.json")
         os.makedirs(os.path.dirname(out), exist_ok=True)
         with open(out, "w") as f:
             json.dump(d, f, indent=1)

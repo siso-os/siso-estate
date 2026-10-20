@@ -20,6 +20,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.join(os.path.expanduser("~"), "SISO_Workspace")
 sys.path.insert(0, HERE)
 import fix  # noqa: E402  the same skip rules, owners, commit+scan+push and receipts the fix policies use
@@ -120,7 +123,7 @@ def main():
     ap.add_argument("--dirty", action="store_true")
     ap.add_argument("--only", default="")
     a = ap.parse_args()
-    code = json.load(open(os.path.join(REPO, "machines", a.machine, "code.json")))
+    code = json.load(open(record_path(REPO, "machines", a.machine, "code.json")))
     busy = fix.working_agents()
     counts, stale, sample = {"live": 0, "current": 0, "write": 0, "written": 0, "skip": 0, "working_copy": 0, "missing": 0}, [], None
     missing = []

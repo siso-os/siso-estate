@@ -13,7 +13,9 @@ import json, os, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(HERE))
-OUT = os.path.join(REPO, "machines", "halo-vps")
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+OUT = record_path(REPO, "machines", "halo-vps")
 H = "/home/shaan"
 
 PROJECTS = {

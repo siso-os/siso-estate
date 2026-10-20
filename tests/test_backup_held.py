@@ -49,7 +49,7 @@ class HeldCopy(unittest.TestCase):
     def test_push_unchanged_then_changed(self):
         r = backup.held_copy(self.repo, "m", "slug", [], None, create=False)
         self.assertEqual(r["status"], "pushed", r)
-        heads = self.restore("m/slug")
+        heads = self.restore(r["ref"].removeprefix("refs/heads/"))
         self.assertIn("refs/heads/main", heads)
         self.assertIn("refs/heads/side", heads)
         self.assertNotIn(b"token=", open(f"{self.d}/out/work.bundle.age.000", "rb").read())   # ciphertext only
@@ -73,6 +73,9 @@ class Alert(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.d)
+        saved_repo = backup.REPO
+        backup.REPO = self.d
+        self.addCleanup(setattr, backup, "REPO", saved_repo)
         self.m = "test-alert-" + os.path.basename(self.d)
         self.rec = os.path.join(backup.REPO, "machines", self.m)
         os.makedirs(self.rec)

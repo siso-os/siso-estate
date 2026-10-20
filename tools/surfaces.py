@@ -17,8 +17,11 @@ import argparse, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.expanduser("~/SISO_Workspace")
-OUT = os.path.join(REPO, "plan", "surfaces.json")
+OUT = record_path(REPO, "plan", "surfaces.json")
 SEED = os.path.join(WS, "SISO_Agency/apps/siso-internal-labs/siso-internal-labs-agent-base/services/node/src/library-surfaces.json")
 SKIP_DIRS = {"node_modules", ".git", "dist", "target", ".next", "_archive", "vendor", ".wrangler", "build", "out"}
 # which shelf a project sits on, by its name; first match wins
@@ -92,7 +95,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--check", action="store_true")
     a = ap.parse_args()
-    reg = json.load(open(os.path.join(REPO, "machines", "register.json")))
+    reg = json.load(open(record_path(REPO, "machines", "register.json")))
     old = json.load(open(OUT)) if os.path.exists(OUT) else {}
     seed = json.load(open(SEED)) if os.path.exists(SEED) else []
     seed = seed if isinstance(seed, list) else seed.get("surfaces", [])

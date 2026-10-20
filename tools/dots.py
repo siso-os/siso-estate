@@ -14,6 +14,10 @@ import argparse, collections, json, os, re, subprocess, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+import sys
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.join(os.path.expanduser("~"), "SISO_Workspace")
 SKIP = {"node_modules", ".git", "_archive", "_reference", "_data", "venv", ".venv", "__pycache__", "dist", "build",
         "target", ".next", ".turbo", ".nuxt", ".svelte-kit"}
@@ -125,7 +129,7 @@ def main():
     out = {"machine": a.machine, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "adr": "docs/adr/0015-the-hidden-estate.md",
            "total": len(items), "by_class": dict(by_class.most_common()), "by_name": dict(by_name.most_common()),
            "findings": {k: v for k, v in findings.items()}, "items": items}
-    dst = os.path.join(REPO, "machines", a.machine, "dots.json")
+    dst = record_path(REPO, "machines", a.machine, "dots.json")
     with open(dst + ".tmp", "w") as f:
         json.dump(out, f, indent=1)
     os.replace(dst + ".tmp", dst)

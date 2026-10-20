@@ -21,6 +21,9 @@ LIMIT = 95 * 1024 * 1024
 PART = 90 * 1024 * 1024
 MIN_FREE = 5 * 1024 ** 3  # never write the disk below this (a full disk crashed herdr and every agent, 24 Sep)
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 SPLIT_NOTE = """# Files split for GitHub
 
@@ -56,7 +59,7 @@ def room(path, need):
 
 def removed(path, nbytes, why, proof):
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "path": tilde(path), "bytes": nbytes, "why": why, "proof": proof}
-    with open(os.path.join(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "removed.jsonl"), "a") as f:
+    with open(record_path(REPO, "machines", os.environ.get("ESTATE_MACHINE", "laptop"), "removed.jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
     print(json.dumps(rec))
 

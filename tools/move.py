@@ -18,6 +18,9 @@ import argparse, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 
 
@@ -81,6 +84,8 @@ def main():
     a = ap.parse_args()
     src = os.path.abspath(os.path.expanduser(a.src))
     dst = os.path.abspath(os.path.expanduser(a.dst))
+    if a.dst.endswith("/"):   # DST/ = into that folder: on 19 Oct a plist moved to a missing `_archive/<d>-launchd-retired/` became a file of that name
+        dst = os.path.join(dst, os.path.basename(src.rstrip("/")))
     if os.path.islink(src):
         sys.exit(f"SRC is already a link: {src} -> {os.readlink(src)}")
     if not os.path.exists(src):
@@ -133,7 +138,7 @@ def main():
                     os.symlink(os.path.join(proj, name), np)
                     linked.append(new_name)
     rec.update({"worktree_repairs": repaired, "claude_history_links": len(linked)})
-    with open(os.path.join(REPO, "machines", a.machine, "moves.jsonl"), "a") as f:
+    with open(record_path(REPO, "machines", a.machine, "moves.jsonl"), "a") as f:
         f.write(json.dumps(rec) + "\n")
     print(json.dumps(rec))
 

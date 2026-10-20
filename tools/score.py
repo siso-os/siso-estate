@@ -9,6 +9,7 @@ ecosystem for agents and projects ... linked up with the siso internal vps so it
 Writes docs/SCORE.md and one line a day in machines/<m>/score-history.jsonl (the timeline; the nightly runs it).
 Run: python3 tools/score.py [--machine laptop]"""
 import argparse, datetime, json, pathlib, re
+from estate_state import record_path
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WS = ROOT.parent.parent
@@ -47,7 +48,7 @@ def era(score, met=None):
 
 def ledger():
     """Cards over live buildings of ours on the laptop; evidence that names a file in the building that exists."""
-    reg = json.loads((ROOT / "machines/register.json").read_text())
+    reg = json.loads(pathlib.Path(record_path(ROOT, "machines", "register.json")).read_text())
     live = [b for b in reg["buildings"] if b.get("provenance") in ("ours", "adopted", "client")
             and "laptop" in (b.get("built_on") or []) and b.get("lifecycle") in ("active", "warm", "dormant")]
     cards = {}
@@ -93,7 +94,7 @@ def main():
         MET.add("L")
     today = datetime.date.today().isoformat()
 
-    hist_p = ROOT / "machines" / a.machine / "score-history.jsonl"
+    hist_p = pathlib.Path(record_path(ROOT, "machines", a.machine, "score-history.jsonl"))
     hist = [json.loads(l) for l in hist_p.read_text().splitlines() if l.strip()] if hist_p.exists() else []
     line = {"date": today, "score": score, "unfuck": t["unfuck"], "ledger": led, "city": t["city"], "window": t["window"],
             "era": era(score)[1], "met": [i["id"] for i in items if i["state"] == "met"], "scale": "v2 (four tiers)"}
@@ -149,7 +150,7 @@ def main():
     L += ["", "## 4. The timeline", "", "One line per day in `machines/" + a.machine + "/score-history.jsonl`, appended by the nightly.", "",
           "| Date | Score | Era | Met |", "|---|---|---|---|"]
     L += [f"| {h['date']} | {h['score']}{' (v1 scale)' if 'scale' not in h else ''} | {h['era']} | {', '.join(h['met']) or 'none'} |" for h in hist]
-    (ROOT / "docs/SCORE.md").write_text("\n".join(L) + "\n")
+    pathlib.Path(record_path(ROOT, "docs", "SCORE.md")).write_text("\n".join(L) + "\n")
     print(json.dumps(line))
 
 

@@ -10,7 +10,7 @@ maintenance. --light (hourly): the existing full hourly sequence, including serv
 and laptop-map from the last full run's records. --maps-only: ONLY doors and laptop-map from the last inventory;
 it writes map records but skips all other work. Each step's failure is printed and the rest still run.
 """
-import argparse, os, subprocess, sys, time
+import argparse, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -22,6 +22,9 @@ def run(name, *cmd):
     print(f"{'ok ' if r.returncode == 0 else 'FAIL'} {name:12} {time.time() - t:5.1f}s  {out}")
     if r.returncode != 0 and r.stderr:
         print("     " + r.stderr.strip().splitlines()[-1][:200])
+    if r.returncode != 0:   # the last line is not always the failing one: servers printed bykonz "scanned" while siso-vps was down 10-19 Oct
+        for line in [l for l in r.stdout.splitlines() if re.search(r"(?i:unreachable|\berror\b)|\bFAIL\b|\bfailed\b(?!': 0)", l)][:3]:
+            print("     " + line[:200])
     return r.returncode
 
 

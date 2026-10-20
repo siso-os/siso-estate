@@ -5,7 +5,8 @@ written and where each stands, and where it is now. Run: python3 tools/history.p
 import collections, json, pathlib, subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-M = ROOT / "machines/laptop"
+from estate_state import record_path
+M = pathlib.Path(record_path(ROOT, "machines/laptop"))
 RECORDS = {"moves": "moved", "removed": "removed with proof", "retired": "retired off the laptop", "houses": "housed or synced",
            "repoints": "repointed", "fixes": "routine fixes (the law)", "intake": "loose files filed", "retired-links": "compat links retired"}
 # the plans, and where each stands (hand-kept: a plan's status is a judgement, not a count)

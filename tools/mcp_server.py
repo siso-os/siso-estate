@@ -14,6 +14,9 @@ import importlib.machinery, importlib.util, io, json, os, sys, contextlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.expanduser("~/SISO_Workspace")
 HOME = os.path.expanduser("~")
 
@@ -64,7 +67,7 @@ def owner(path):
 
 def running():
     try:
-        return json.load(open(os.path.join(REPO, "machines", E.machine(), "running.json")))
+        return json.load(open(record_path(REPO, "machines", E.machine(), "running.json")))
     except (OSError, ValueError):
         return {}
 

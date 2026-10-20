@@ -17,6 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 STALE = 7 * 86400
 WIP_FILES, WIP_BYTES = 20000, 200 * 1024 * 1024  # tools/backup.py MAX_WIP_*: a bigger pile of loose files is not backed up
 
@@ -141,12 +144,12 @@ def walk_outside_repos(tracked, plane_paths):
 def main():
     machine = sys.argv[sys.argv.index("--machine") + 1] if "--machine" in sys.argv else os.environ.get("ESTATE_MACHINE", "laptop")
     quiet = "--quiet" in sys.argv
-    inv = load(os.path.join(REPO, "machines", machine, "repos.json"), {})
+    inv = load(record_path(REPO, "machines", machine, "repos.json"), {})
     repos = inv.get("repos", [])
-    plan = {i["path"]: i for i in load(os.path.join(REPO, "machines", machine, "backup-plan.json"), {}).get("items", [])}
+    plan = {i["path"]: i for i in load(record_path(REPO, "machines", machine, "backup-plan.json"), {}).get("items", [])}
     umap = load(os.path.join(WS, ".estate", "map.json"), {})
     mapped = umap.get("repos", {})
-    gh = load(os.path.join(REPO, "machines", "github", "sisodias.json"), [])
+    gh = load(record_path(REPO, "machines", "github", "sisodias.json"), [])
     planes = [p for pl in load(os.path.join(REPO, "plan", "data-planes.json"), {}).get("planes", []) for p in pl.get("paths", [])]
     tracked = set(subprocess.run(["git", "-C", WS, "ls-files"], capture_output=True, text=True).stdout.splitlines())
 
@@ -212,7 +215,7 @@ def main():
         work["with disk-only work" if act in ("own-private", "overlay", "new-repo") else act] += 1
     unpushed = [(os.path.relpath(r["path"], WS), r.get("unpushed_commits") or 0) for r in live if (r.get("unpushed_commits") or 0) > 0]
     no_remote = [os.path.relpath(r["path"], WS) for r in live if not r.get("remotes")]
-    backup = load(os.path.join(REPO, "machines", machine, "backup.json"), {})
+    backup = load(record_path(REPO, "machines", machine, "backup.json"), {})
 
     # 6. homeless files
     outside = walk_outside_repos(tracked, [p.rstrip("/") + "/" for p in planes])
@@ -236,7 +239,7 @@ def main():
 
     out = {
         "machine": machine, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "inputs": {"inventory": inv.get("observed_at"), "backup_plan": load(os.path.join(REPO, "machines", machine, "backup-plan.json"), {}).get("planned_at"),
+        "inputs": {"inventory": inv.get("observed_at"), "backup_plan": load(record_path(REPO, "machines", machine, "backup-plan.json"), {}).get("planned_at"),
                    "last_backup_run": backup.get("ran_at"), "map_built": umap.get("built_at"), "github_repos": len(gh)},
         "repos": {"checkouts": len(checkouts), "worktrees": sum(1 for r in repos if r["kind"] == "worktree"),
                   "submodules": sum(1 for r in repos if r["kind"] == "submodule"), "by_place": dict(by_place.most_common())},
@@ -269,7 +272,7 @@ def main():
                                                                 tilde(r["path"]))[0] for r in checkouts if r["place"] == "ephemeral").most_common(5))},
             "home": {"unplanned_top_level": home_extra, **intake}, "inbox": len(inbox)},
     }
-    dst = os.path.join(REPO, "machines", machine, "census.json")
+    dst = record_path(REPO, "machines", machine, "census.json")
     json.dump(out, open(dst, "w"), indent=1)
     open(dst, "a").write("\n")
     if quiet:
