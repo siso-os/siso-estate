@@ -18,7 +18,10 @@ import json, os, re, subprocess, sys, time
 HOME = os.path.expanduser("~")
 AR = os.path.join(HOME, "SISO_Workspace", "_archive")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MOVES = os.path.join(REPO, "machines", "laptop", "moves.jsonl")
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
+MOVES = record_path(REPO, "machines", "laptop", "moves.jsonl")
 
 
 def born(p):

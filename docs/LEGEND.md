@@ -35,16 +35,16 @@ Two agents who know the business must put the same new thing in the same place. 
 ```
 ~/SISO_Workspace                   the SISO estate: SISO Agency, the whole thing; this tree plus its register is the map
 ├── SISO_Agency/                   the business side
-│   ├── hq/                        SISO itself: its sites, roster, verticals (industries/), work hub, machines
+│   ├── agency/hq/                        SISO itself: its sites, roster, verticals (agency/industries/), work hub, machines
 │   ├── partners/                  the agencies SISO works through (the leverage)
 │   │   ├── halo/                  #1, funds SISO. Its systems: crm/, oracle/, kellman/, inspiration/.
 │   │   │   └── clients/           HALO's clients: collegebesties/, ...                       site: halo-vps
-│   │   ├── fahmy/                 #2. Its own work at the top (hq/, services, the client platform pilot).
+│   │   ├── fahmy/                 #2. Its own work at the top (agency/hq/, services, the client platform pilot).
 │   │   │   └── clients/           bykonz/, melanotresses/, mygumm/                        site: bykonz-contabo
 │   │   └── <old-partner>/         the agency Lumelle and Home Essentials came through (name from Shaan)
 │   │       └── clients/           lumelle/, home-essentials/
 │   ├── apps/                      products: the business-OS modules built once and used by every partner
-│   ├── factory/                   the method: how SISO builds them
+│   ├── agency/factory/                   the method: how SISO builds them
 │   └── clients/                   work that came without a partner: Action Model (near-subsidiary; feeds the
 │                                  frameworks), and older direct work (restaurant, bike rental, five-star hire, ...)
 ├── SISO_Agents/                   the agent infrastructure side: the workforce every partner's work runs on
@@ -62,17 +62,17 @@ site).
 
 | Part | Holds | Today |
 |---|---|---|
-| `hq/` | SISO itself: `website/`, `agents/` (its roster), `industries/` (the verticals), `infra/` (Twenty, its CRM instance), `docs/`, `runs/`, and its own hubs | the hubs `siso-internal` and `siso-internal-labs` sit in `apps/`; `hq/agents/alj_ofm` is HALO's |
+| `agency/hq/` | SISO itself: `website/`, `agents/` (its roster), `agency/industries/` (the verticals), `infra/` (Twenty, its CRM instance), `docs/`, `runs/`, and its own hubs | the hubs `siso-internal` and `siso-internal-labs` sit in `apps/`; `agency/hq/agents/alj_ofm` is HALO's |
 | `partners/<agency>/` | the partner's own systems at the top, its clients in `clients/<brand>/`; one site record | does not exist yet; HALO is at the root, Fahmy in `clients/` |
 | `apps/` | products only: modules built once and used across partners (client platform, CRM kernel, inbox, mailing, ticketing, the knowledge module) | also holds hubs, Oracle links and Polymarket |
-| `factory/` | the method: software factory, app factory, e-commerce factory, the agency frameworks | holds second copies of the Library's repo bank |
+| `agency/factory/` | the method: software factory, app factory, e-commerce factory, the agency frameworks | holds second copies of the Library's repo bank |
 | `clients/<brand>/` | clients that came without a partner | also holds Fahmy's and the old partner's clients |
 
 The verticals in `hq/industries/` are where the business's reuse is decided: a vertical names the modules an industry
 needs, the partner that pilots it, and the products it has produced. Only `model_management` exists today; events
 (Fahmy), e-commerce (the old partner) and the business-OS industries (Action Model supplied 17) belong beside it.
 Action Model stays a client, but its reusable output (the frameworks, the industry material) is SISO's: it lives in
-`factory/` and `hq/industries/`, and Action Model `uses` it (Shaan: "those frameworks are really important for SISO
+`agency/factory/` and `hq/industries/`, and Action Model `uses` it (Shaan: "those frameworks are really important for SISO
 Agency").
 
 **SISO Agents, the agent infrastructure side.** Its own rule already fits the principle and stays: flat, one repo per
@@ -121,7 +121,7 @@ to the public packages.
 |---|---|---|
 | halo-vps | HALO | `partners/halo/` |
 | bykonz-contabo | Fahmy's agency | `partners/fahmy/` |
-| siso-vps | SISO | `hq/` and the agent side; it also runs partner services, each recorded with its partner |
+| siso-vps | SISO | `agency/hq/` and the agent side; it also runs partner services, each recorded with its partner |
 | laptop | everything | a cache of the whole map |
 | the Mac Mini | the vault | storage |
 
@@ -240,7 +240,7 @@ Examples:
      `HALO_Agency/oracle` holds `sisodias/oracle-streaming`.
    - `SISO_Agency/apps/` also holds three links and a folder of links into HALO.
    - Should be: everything under `partners/halo/oracle/` once STREAMING finishes the migration.
-5. **Done 26 Sep: SISO HQ held HALO's work.** `hq/agents/alj_ofm` (repo `siso-agent-alj_ofm`), HALO's OFM agent, is now
+5. **Done 26 Sep: SISO HQ held HALO's work.** `agency/hq/agents/alj_ofm` (repo `siso-agent-alj_ofm`), HALO's OFM agent, is now
    `partners/halo/agents/alj_ofm`. `hq/industries/model_management` stays: it is SISO's vertical, and HALO pilots it.
 6. **The agent side's live setup and its public packages have drifted apart, and a few copies are stale.**
    - The first draft called the packages duplicates by their last-commit dates. Their own manifest says otherwise:
@@ -252,7 +252,7 @@ Examples:
    - Should be: one release path from the live setup to the packages; the stale copies point forward or go to the
      vault. Keeper: the agent stack.
 7. **`SISO_Agency/apps` holds things that are not products.** It holds SISO's own hubs (`siso-internal`,
-   `siso-internal-labs`), which belong in `hq/`, and Shaan's trading research (`Polymarket-Research`), which belongs
+   `siso-internal-labs`), which belong in `agency/hq/`, and Shaan's trading research (`Polymarket-Research`), which belongs
    with `personal/trading-for-dad` (Polymarket has three homes today).
 8. **The Library is copied into the factory.** The repo bank and the agency frameworks have second copies inside
    `factory/siso-agency-software-factory/modules/`.

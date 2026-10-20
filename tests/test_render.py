@@ -6,20 +6,24 @@
 The page is generated into a temp file from the repository's real register, so these tests read the same input the
 command does and write nothing into plan/.
 """
-import json, os, re, sys, tempfile, unittest
+import json, os, re, shutil, sys, tempfile, unittest
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "tools"))
 import render  # noqa: E402
 
-REGISTER = json.load(open(os.path.join(REPO, "machines", "register.json")))
+REGISTER = None   # set in setUpClass from the one snapshot render reads (the hourly refresh rewrites register.json)
 
 
 class RenderTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        global REGISTER
         cls.dir = tempfile.TemporaryDirectory()
-        cls.out, cls.size = render.build(render.REGISTER, os.path.join(cls.dir.name, "index.html"))
+        snap = os.path.join(cls.dir.name, "register.json")
+        shutil.copyfile(render.REGISTER, snap)
+        REGISTER = json.load(open(snap))
+        cls.out, cls.size = render.build(snap, os.path.join(cls.dir.name, "index.html"))
         with open(cls.out) as fh:
             cls.html = fh.read()
 

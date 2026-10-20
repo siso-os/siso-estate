@@ -22,17 +22,20 @@ import ledger
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 DATA = "/System/Volumes/Data"
 MAP = os.path.join(REPO, "plan", "storage-map.json")
-DOC = os.path.join(REPO, "docs", "STORAGE-MAP.md")
+DOC = record_path(REPO, "docs", "STORAGE-MAP.md")
 HOST = socket.gethostname().lower()
 MACHINE = os.environ.get("ESTATE_MACHINE") or ("laptop" if HOST.startswith("shaans-macbook") else "mini" if "mini" in HOST else HOST.split(".")[0])
 if MACHINE != "laptop":  # the same map on every machine (Shaan, 8 Oct ~21:00: "laptop and Mac mini should both be his domain")
-    DOC = os.path.join(REPO, "docs", f"STORAGE-MAP-{MACHINE}.md")
-TREE = os.path.join(REPO, "machines", MACHINE, "storage-tree.json")
-HIST = os.path.join(REPO, "machines", MACHINE, "storage-history.jsonl")
-REPOS = os.path.join(REPO, "machines", MACHINE, "repos.json")
+    DOC = record_path(REPO, "docs", f"STORAGE-MAP-{MACHINE}.md")
+TREE = record_path(REPO, "machines", MACHINE, "storage-tree.json")
+HIST = record_path(REPO, "machines", MACHINE, "storage-history.jsonl")
+REPOS = record_path(REPO, "machines", MACHINE, "repos.json")
 WT = os.path.join(HOME, "SISO_Workspace", "_data", "worktrees")
 GIB = 1048576  # KiB
 SHOW = GIB // 2  # a folder gets its own line from 0.5 GiB
@@ -150,7 +153,7 @@ def render_ledger(t, m, repos_json=None, now=None, mtime=ledger.newest_mtime):
          "| Bucket | GiB | Share | Meaning |", "|---|---:|---:|---|"]
     for b in ledger.BUCKETS:
         extra = f" (of which only copy: {g(here_working):.1f} GiB)" if b == ledger.WORKING and here_working else ""
-        L.append(f"| **{b}** | {g(sums[b]):.1f} | {100 * sums[b] / total:.0f}% | {ledger.WHAT[b]}{extra} |")
+        L.append(f"| **{b}** | {g(sums[b]):.1f} | {100 * sums[b] / (total or 1):.0f}% | {ledger.WHAT[b]}{extra} |")
     can_go = sums[ledger.SAFE] + sums[ledger.REBUILD] - sum(r["kib"] for r in rows if r["bucket"] == ledger.REBUILD and r["home"] == "system")
     L += [f"| **Total measured** | {g(total):.1f} | 100% | Data volume tree + non-Data volumes |", "",
           f"**Free now {free:.1f} GiB. Could be free: {free + g(can_go):.1f} GiB** (free + SAFE COPY {g(sums[ledger.SAFE]):.1f} "
@@ -238,13 +241,29 @@ def render(t, m, repos_json=None):
     return "\n".join(L)
 
 
+def weekly_due(tree=TREE, now=None):
+    """Copied tree files can have fresh mtimes and stale measurement times."""
+    try:
+        with open(tree) as f:
+            measured = float(json.load(f).get("t", 0))
+        return (time.time() if now is None else now) - measured >= 7 * 86400
+    except (OSError, TypeError, ValueError):
+        return True
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--render", action="store_true")
+    ap.add_argument("--if-due", action="store_true", help="weekly successful writes; retry daily until a write succeeds")
     ap.add_argument("--tree", default=TREE, help="with --render: read this tree file")
     ap.add_argument("--doc", default=DOC, help="with --render: write the page here")
     a = ap.parse_args()
+    if a.if_due and not a.render and not weekly_due():
+        print("storage-map: weekly snapshot current")
+        return 0
     m = json.load(open(MAP))
+    for path in (TREE, HIST, DOC, a.tree, a.doc):
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     if a.render:
         t = json.load(open(a.tree))
     else:
@@ -268,7 +287,7 @@ def main():
     t.setdefault("hist", history()[:-1][-60:])
     open(a.doc if a.render else DOC, "w").write(render(t, m))
     print(f"storage-map: {t['free_gib']:.1f} GiB free; tree, {len(t['dots'])} hidden folders, "
-          f"{len(t['worktrees'])} worktrees -> {os.path.relpath(DOC, REPO)}")
+          f"{len(t['worktrees'])} worktrees -> {os.path.relpath(a.doc if a.render else DOC, REPO)}")
 
 
 if __name__ == "__main__":

@@ -23,8 +23,11 @@ import argparse, concurrent.futures, json, os, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 PLAN = os.path.join(REPO, "plan", "machines.json")
-RECORD = os.path.join(REPO, "machines", "fleet.json")
+RECORD = record_path(REPO, "machines", "fleet.json")
 WS = os.path.expanduser("~/SISO_Workspace")
 RESULTS = os.path.join(WS, "_data", "fleet")
 REALERT = 6 * 3600
@@ -146,7 +149,7 @@ def probe_one(name, m):
         return {"machine": name, "state": state, "detail": detail, "at": at}
     rec = parse(r.stdout)
     rec.update(machine=name, state="ok", detail=f"exec ok in {time.time() - t0:.1f} s", at=at)
-    srv = load(os.path.join(REPO, "machines", name, "servers.json"), {})
+    srv = load(record_path(REPO, "machines", name, "servers.json"), {})
     if srv.get("summary"):                        # services from the nightly scan (tools/servers.py), not re-scanned
         rec["services"] = {"count": srv["summary"].get("services", 0), "failed": srv["summary"].get("failed", 0),
                            "scanned": srv.get("at")}
@@ -155,7 +158,7 @@ def probe_one(name, m):
 
 def probe_all(include_on_demand=False):
     ms = plan()["machines"]
-    todo = {n: m for n, m in ms.items() if include_on_demand or not m.get("fleet", {}).get("on_demand")}
+    todo = {n: m for n, m in ms.items() if not m.get("retired") and (include_on_demand or not m.get("fleet", {}).get("on_demand"))}
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         res = dict(zip(todo, ex.map(lambda nm: probe_one(*nm), todo.items())))
     old = load(RECORD, {}).get("machines", {})

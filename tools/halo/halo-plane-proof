@@ -22,7 +22,7 @@ def prove(plane):
     tmp = tempfile.mkdtemp(prefix=f"halo-proof-{plane}-", dir="/srv")
     try:
         r = subprocess.run([sys.executable, os.path.join(EST, "tools", "data-backup.py"), "restore", f"halo-{plane}",
-                            f"{tmp}/outer"], capture_output=True, text=True)
+                            f"{tmp}/outer", "--machine", "vps-siso"], capture_output=True, text=True)
         if r.returncode:
             return {"ok": False, "error": "restore: " + r.stderr[-200:]}
         base = next((dp for dp, dns, _ in os.walk(f"{tmp}/outer") if dp.endswith(f"planes/{plane}")), None)

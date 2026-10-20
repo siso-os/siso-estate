@@ -29,7 +29,7 @@ class MiniFloor(unittest.TestCase):
             run.assert_not_called()
             self.assertEqual(hold.read_text(), '9999999999\tOwner deploy freeze')
 
-    def test_recovery_leaves_hold_to_expire_and_dry_run_never_writes(self):
+    def test_recovery_releases_own_hold_and_dry_run_never_writes(self):
         with tempfile.TemporaryDirectory() as home, patch.object(guard, 'HOME', home), patch.object(guard, 'free_kib', return_value=70 * 1024**2), patch.object(guard.subprocess, 'run') as run:
             guard.check_floor(60, False)
             self.assertEqual(list(Path(home).iterdir()), [])
@@ -38,7 +38,9 @@ class MiniFloor(unittest.TestCase):
             hold.write_text('9999999999\tESTATE-MINI: disk low')
             run.return_value.returncode = 0
             guard.check_floor(60, True)
-            run.assert_not_called()
+            # Space is back: the guard releases its own hold at once instead of making work wait for it to expire.
+            run.assert_called_once()
+            self.assertEqual(run.call_args.args[0][1:], ['--release'])
 
 if __name__ == '__main__':
     unittest.main()

@@ -44,6 +44,34 @@ class DataBackup(unittest.TestCase):
         finally:
             db.json.load = orig
 
+    def test_git_hook_environment_cannot_redirect_plane_repository(self):
+        sentinel = os.path.join(self.tmp, "sentinel")
+        isolated = os.path.join(self.tmp, "isolated")
+        os.makedirs(sentinel)
+        os.makedirs(isolated)
+        def git(cwd, *args):
+            return subprocess.check_output(["git", "-C", cwd, *args], text=True).strip()
+        git(sentinel, "init", "-q", "-b", "main")
+        git(sentinel, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+            "commit", "--allow-empty", "-qm", "sentinel")
+        before = git(sentinel, "rev-parse", "HEAD")
+        poisoned = {"GIT_DIR": os.path.join(sentinel, ".git"), "GIT_WORK_TREE": sentinel,
+                    "GIT_COMMON_DIR": os.path.join(sentinel, ".git"),
+                    "GIT_INDEX_FILE": os.path.join(sentinel, ".git", "index"),
+                    "GIT_ALLOW_PROTOCOL": "file"}
+        with patch.dict(os.environ, poisoned):
+            self.assertEqual(db.sh("git", "init", "-q", "-b", "main", cwd=isolated)[0], 0)
+            with open(os.path.join(isolated, "fixture"), "w") as out:
+                out.write("isolated fixture\n")
+            self.assertEqual(db.sh("git", "add", "fixture", cwd=isolated)[0], 0)
+            self.assertEqual(db.sh("git", "-c", "user.name=Fixture", "-c",
+                                  "user.email=fixture@example.invalid", "commit", "-qm",
+                                  "plane fixture", cwd=isolated)[0], 0)
+        self.assertEqual(git(sentinel, "rev-parse", "HEAD"), before)
+        self.assertEqual(git(sentinel, "status", "--porcelain"), "")
+        self.assertEqual(git(isolated, "ls-files"), "fixture")
+
+
     def test_emptied_plane_is_held(self):
         shutil.rmtree(os.path.join(self.srv, "opt"))
         os.makedirs(os.path.join(self.srv, "opt", "app", "data"))
@@ -241,6 +269,8 @@ class ReportingPrivacy(unittest.TestCase):
             return 0, "true" if args[-1] == ".private" else "", ""
         if args[:4] == ("git", "remote", "add", "origin"):
             args = (*args[:4], str(self.remote))
+        if args[:2] in (("git", "ls-remote"), ("git", "clone")):
+            args = tuple(str(self.remote) if str(a).startswith("https://github.com/") else a for a in args)
         self.assertIn(args[0], ("git", "tar"))
         return self.real_sh(*args, **kwargs)
 
@@ -270,6 +300,53 @@ class ReportingPrivacy(unittest.TestCase):
         self.assertIn(rel.encode(), file_list.split(b"\0"))
         self.assertEqual(manifest["plane"], "fixture")
         self.assertEqual(manifest["regenerable_not_included"], [])
+
+    def test_completed_generations_survive_partial_upload_and_restore_uses_pinned_tag(self):
+        first = db.run_plane(self.plane, "laptop")
+        self.assertEqual(first["status"], "pushed", first)
+        self.source.write_text("second synthetic payload\n")
+        second = db.run_plane(self.plane, "laptop")
+        self.assertEqual(second["status"], "pushed", second)
+        self.assertNotEqual(first["ref"], second["ref"])
+        for result in (first, second):
+            self.assertEqual(self.real_sh("git", "rev-parse", result["ref"], cwd=str(self.remote))[1], result["commit"])
+        self.failure = "add completion"
+        failed = db.run_plane(self.plane, "laptop")
+        self.assertEqual(failed["status"], "error", failed)
+        _, tags, _ = self.real_sh("git", "for-each-ref", "--format=%(refname)", "refs/tags/snapshots", cwd=str(self.remote))
+        self.assertEqual(set(tags.splitlines()), {first["ref"], second["ref"]})
+        self.failure = None
+        with patch.object(db, "planes", return_value=[self.plane]):
+            self.assertEqual(db.cmd_restore("fixture", str(self.root / "restore")), 0)
+        clones = [a for a in self.calls if a[:2] == ("git", "clone")]
+        self.assertEqual(clones[-1][clones[-1].index("--branch") + 1], second["ref"].removeprefix("refs/tags/"))
+
+    def test_large_unclassified_file_holds_before_unchanged_shortcut_or_upload(self):
+        import hashlib
+        included = [str(self.source)]
+        fingerprint = hashlib.sha256("\n".join(
+            f"{p}\t{os.path.getsize(p)}\t{int(os.path.getmtime(p))}" for p in included).encode()).hexdigest()
+        records = self.root / "machines/laptop/data-backup.json"
+        records.parent.mkdir(parents=True)
+        records.write_text(json.dumps({"results": {"fixture": {"status": "pushed", "fingerprint": fingerprint, "files": 1}}}))
+        large = self.source.parent / "SYNTHETIC_DATABASE.db"
+        with large.open("wb") as stream:
+            stream.truncate(db.REGEN_MIN)
+        result = db.run_plane(self.plane, "laptop")
+        self.assertEqual((result["status"], result["unclassified_large_files"]), ("held", 1))
+        self.assert_private(json.dumps(result))
+        self.assertEqual(self.calls, [])
+
+    def test_public_or_unverified_destination_never_receives_payload(self):
+        routed = self.routed
+        def public(*args, **kwargs):
+            if args[0] == "gh" and args[-1] == ".private":
+                return 0, "false", ""
+            return routed(*args, **kwargs)
+        with patch.object(db, "sh", side_effect=public):
+            result = db.run_plane(self.plane, "laptop")
+        self.assertEqual(result["status"], "held", result)
+        self.assertFalse(any("push" in call for call in self.calls))
 
     def test_backup_errors_never_echo_path_diagnostics(self):
         for failure in ("tar", "pipeline", "add summary", "commit summary", "add chunk", "add completion", "resolve", "timeout"):
@@ -315,6 +392,25 @@ class ReportingPrivacy(unittest.TestCase):
                 db.cmd_restore("fixture", str(self.root / "restore"), ref=ref)
             self.assertNotEqual(raised.exception.code, 0)
             self.assert_private(str(raised.exception.code))
+
+    def test_legacy_restore_decoder_failure_is_private_and_unsuccessful(self):
+        ref = "refs/tags/snapshots/laptop/synthetic"
+        checkout = self.root / "restore-checkout"
+        checkout.mkdir()
+        (checkout / "data.tar.zst.age.aaa").write_bytes(b"synthetic")
+        (checkout / "SNAPSHOT.json").write_text(json.dumps({"plane": "fixture", "machine": "laptop",
+                                                          "complete": True, "chunks": 1, "encrypted_bytes": 9}))
+        output, errors = io.StringIO(), io.StringIO()
+        replies = [(0, "a" * 40 + "\t" + ref, ""), (0, "", ""), (0, "a" * 40, "")]
+        with patch.object(db, "planes", return_value=[self.plane]), patch.object(db, "sh", side_effect=replies), \
+                patch.object(db.tempfile, "mkdtemp", return_value=str(checkout)), \
+                patch.object(db.dm, "extract_archive", side_effect=RuntimeError(self.diagnostic)) as extract, \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors), self.assertRaises(SystemExit) as raised:
+            db.cmd_restore("fixture", str(self.root / "restore"), ref=ref)
+        self.assertNotEqual(raised.exception.code, 0)
+        extract.assert_called_once()
+        self.assert_private(str(raised.exception.code))
+        self.assert_private(output.getvalue() + errors.getvalue())
 
     def test_restore_extraction_errors_do_not_echo_paths(self):
         with patch.object(db, "_cmd_restore", side_effect=ValueError(self.diagnostic)), self.assertRaises(SystemExit) as raised:

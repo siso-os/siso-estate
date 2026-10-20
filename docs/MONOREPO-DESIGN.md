@@ -42,10 +42,10 @@ estate/          city hall: estate tool, laptop-health, os-release (exports), gu
 packages/        shared code (@siso/ui, business-os, site-kit, booking, voice, cms, edge-auth, ...)
 products/        what we ship: os (siso-internal + business-os app + life module), ui-hub, siso-voice,
                  siso-browser, siso-music, sites, labs, bench, lawbook, project-base, client-platform
-factory/         client brief -> app: line, generator, method, app-factory
-industries/<x>/  pack + clients/<brand> (brand and data only; client code stays in their repo)
+agency/factory/         client brief -> app: line, generator, method, app-factory
+agency/industries/<x>/  pack + clients/<brand> (brand and data only; client code stays in their repo)
 library/         knowledge system code, catalog, registry, works, small curated text; big corpora = data blocks
-hq/              the agency: direction, brand, site, ops docs
+agency/hq/              the agency: direction, brand, site, ops docs
 data/            manifests only: blocks.json pins every block by repo + sha; `bin/get <block>` mounts it
 bin/             new, move, check, land, work, get, index
 .siso/           tags.json (closed vocabulary), moves.jsonl (append-only), baseline.json (ratchet), generated/
@@ -136,12 +136,12 @@ seats/estate/
 | agents/work, team, adapters | project-os, project-team, agent-integrations | project-team-2, social-outreach x2 |
 | agents/skills/{hub,playbook} | skills-hub, agent-playbook, jev-agent-skills | |
 | estate/* | siso-estate, laptop-health, os-release, guest-gateway | codex-remote (after a security read) |
-| packages/ui + products/ui-hub + library/banks/ui | siso-ui-hub, siso-ui-base, component-bank index, design-system | siso-ui-library, ui-shoot, ui-comps, actionist-components |
-| products/os | siso-internal, siso-business-os, SISOCRM, siso-notes(+backend), task0001, operator-walk, siso-lifelock + siso-life code | siso-monorepo, siso-core-clean |
-| products/siso-voice | siso-voice, freeflow | |
+| platform/ui + hubs/ui + library/banks/ui | siso-ui-hub, siso-ui-base, component-bank index, design-system | siso-ui-library, ui-shoot, ui-comps, actionist-components |
+| apps/os | siso-internal, siso-business-os, SISOCRM, siso-notes(+backend), task0001, operator-walk, siso-lifelock + siso-life code | siso-monorepo, siso-core-clean |
+| apps/voice | siso-voice, freeflow | |
 | hq | siso-agency, landing, sites, scratch | bdbt, demo-tool, 6 proof* |
-| factory/* | software-factory, client-pack, frameworks, app-factory | ecommerce-app-factory (after fold) |
-| industries/<x>/pack | bike-rental-template, restaurant-app | |
+| agency/factory/* | software-factory, client-pack, frameworks, app-factory | ecommerce-app-factory (after fold) |
+| agency/industries/<x>/pack | bike-rental-template, restaurant-app | |
 | library/* | great-library-of-siso, knowledge, foundry, people-graph code, repo-bank code, siso-knowledge, erdos | youtube-knowledge-engine |
 | data blocks | transcripts (3 sets), UI/repo banks, people-graph-data, personal, runtime planes | |
 Stays separate: HALO, client-owned (9), Fahmy, real forks (siso-code, listmonk, chat-widget; Plane/chatwoot only if
@@ -151,7 +151,7 @@ held-backups in data-planes.json; scan c9fce36 (aws-creds files); stargate-libra
 
 ## 9. Laptop
 Always: root, seats/ (all, small), agents/, estate/, packages/, bin/, decisions/, hq/. Per seat cone: products/*,
-factory/, industries/, library/. Data: only blocks a working seat asks for. Today's hot set (usage, 8 days):
+agency/factory/, agency/industries/, library/. Data: only blocks a working seat asks for. Today's hot set (usage, 8 days):
 harness, estate, siso-code (fork, own repo), ui-hub, agents/zero, people-graph.
 
 ## 10. Build order (each step leaves main green)

@@ -15,6 +15,9 @@ import argparse, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 MANIFEST = os.path.join(WS, "_archive", "2026-09-23-estate-hazards", "MANIFEST.txt")
@@ -36,7 +39,7 @@ CODE_OR_INSTR = re.compile(r"\.(py|sh|zsh|bash|mjs|cjs|js|ts|tsx|json|jsonc|ya?m
 
 def compat_links(machine):
     out = {}
-    for line in open(os.path.join(REPO, "machines", machine, "moves.jsonl")):
+    for line in open(record_path(REPO, "machines", machine, "moves.jsonl")):
         m = json.loads(line)
         if m.get("compat_link") and os.path.islink(m["src"]):
             out[m["src"]] = m["dst"]
@@ -90,7 +93,7 @@ def started_before_move(srcs, machine):
     but they resolved the old one at start (__dirname, config paths), so removing the link breaks them. 24 Sep: the camofox
     server, started from tools/camofox-browser 7 h before its move, failed every new tab once that link went."""
     moved = {}
-    for line in open(os.path.join(REPO, "machines", machine, "moves.jsonl")):
+    for line in open(record_path(REPO, "machines", machine, "moves.jsonl")):
         m = json.loads(line)
         if m["src"] in srcs:
             try:
@@ -149,7 +152,7 @@ def symlink_users(srcs):
 def git_meta(machine):
     """Worktree pointers (.git files, .git/worktrees/*/gitdir) of every inventoried repo."""
     import glob
-    inv = json.load(open(os.path.join(REPO, "machines", machine, "repos.json")))
+    inv = json.load(open(record_path(REPO, "machines", machine, "repos.json")))
     out = []
     for r in inv["repos"]:
         g = os.path.join(r["path"], ".git")
@@ -204,7 +207,7 @@ def main():
     if a.cmd == "check":
         return
     stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
-    with open(MANIFEST, "a") as man, open(os.path.join(REPO, "machines", a.machine, "retired-links.jsonl"), "a") as log:
+    with open(MANIFEST, "a") as man, open(record_path(REPO, "machines", a.machine, "retired-links.jsonl"), "a") as log:
         for s in srcs:
             r = res[s]
             used = r["procs"] or r["files"] or r["links"]

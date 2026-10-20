@@ -40,7 +40,7 @@ The score rises by itself as the cards land: the ledger tier (15 points) counts 
 1. **Money.** HALO pays SISO. Fahmy's agency pays for Bykonz, MelanoTresses and myGUMM work. Partner work under
    `SISO_Agency/partners/` is where the money comes from; everything else either earns through it or makes it cheaper.
 2. **Client work → frameworks → the Library.** Each client build meets real problems; what repeats becomes a framework
-   (Action Model's, the industries in `hq/`), and frameworks become Works in the Great Library.
+   (Action Model's, the industries in `agency/hq/`), and frameworks become Works in the Great Library.
 3. **The Library → every build.** The banks (8,538 components, 23,778 vetted repos, the UI base, siso-shell's page
    templates) feed the factory, every product, every client app and every page an agent shows Shaan.
 4. **The factory → products and client apps.** The Software Factory and superapp-forge turn banks and frameworks into

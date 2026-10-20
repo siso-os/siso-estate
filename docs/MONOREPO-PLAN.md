@@ -89,7 +89,7 @@ you can touch anything but Halo"; "their owners aren't working right now, push t
    bike-rental-template, trader-platform), then wave C live seats one at a time (siso-estate LAST, harness-lab,
    skills-hub, playbook, siso-agent-zero, labs-agent-base, siso-internal, SISOCRM, siso-ui-hub, laptop-health,
    siso-os-release, great-library-of-siso, siso-agent-hooks). Then the merges in MONOREPO-DESIGN.md §8 (agents,
-   UI banks, OS = products/os, agency, library) and archive the superseded repos (blackbox4, agent-zero-protocol,
+   UI banks, OS = apps/os, agency, library) and archive the superseded repos (blackbox4, agent-zero-protocol,
    memories_v2, project-team-2, social-outreach x2, codex-remote after a security read, siso-ui-library, ui-shoot,
    ui-comps, actionist-components, SISOCRM dup, siso-monorepo, siso-core-clean, bdbt, demo-tool, proof x6).
 5. Seats move in: each seat's HANDOFF.md, memory/, source/, LOOP.md into seats/<seat>/; t3-seats.json and

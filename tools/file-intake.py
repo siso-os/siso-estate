@@ -16,6 +16,9 @@ import legend  # a partner's home moves with the legend, so intake follows it
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 STAMP = time.strftime("%Y-%m-%d")
 RULES = [  # (rule, regex on the name, destination folder)
     ("study", r"eieae|ralo3|umcdsk|umcdsn|^(00-)?section-[1-4]|pebblepad|^epq|module[-_ ]handbook|resit|completing your course|award-data",
@@ -83,7 +86,7 @@ def main():
         for p, d, rule in moves[:400]:
             print(f"  {rule:13} {os.path.basename(p)[:70]}")
         return
-    log = open(os.path.join(REPO, "machines", a.machine, "intake.jsonl"), "a")
+    log = open(record_path(REPO, "machines", a.machine, "intake.jsonl"), "a")
     done = 0
     for p, d, rule in moves:
         if os.path.lexists(d):

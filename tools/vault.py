@@ -13,6 +13,7 @@ The vault is cloned into a scratch folder and pushed; nothing stays on the lapto
 import argparse, datetime, json, os, pathlib, subprocess, sys, tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+from estate_state import record_path
 OWNER, VAULT = "sisodias", "siso-vault"
 
 
@@ -35,7 +36,7 @@ def refs(lines):
 
 
 def delete(a):
-    folded = {json.loads(l)["repo"]: json.loads(l) for l in (ROOT / "machines" / a.machine / "vault.jsonl").open() if l.strip()}
+    folded = {json.loads(l)["repo"]: json.loads(l) for l in (pathlib.Path(record_path(ROOT, "machines")) / a.machine / "vault.jsonl").open() if l.strip()}
     tmp = pathlib.Path(tempfile.mkdtemp(prefix=".siso-ephemeral-vault."))
     try:
         v = tmp / VAULT
@@ -59,7 +60,7 @@ def delete(a):
             if not a.run:
                 print(f"plan: delete {OWNER}/{n} ({len(now)} refs, all in {b.relative_to(v)})"); continue
             sh("gh", "repo", "delete", f"{OWNER}/{n}", "--yes")
-            with (ROOT / "machines" / a.machine / "removed.jsonl").open("a") as o:
+            with (pathlib.Path(record_path(ROOT, "machines")) / a.machine / "removed.jsonl").open("a") as o:
                 o.write(json.dumps({"at": datetime.datetime.now().isoformat(timespec="seconds"), "path": f"github:{OWNER}/{n}",
                                     "kind": "github-repo", "why": f["why"], "proof": f"{VAULT}/{b.relative_to(v)}: {len(now)} refs equal to ls-remote at delete time; restore drill passed 25 Sep"}) + "\n")
             print(f"deleted {OWNER}/{n}: {len(now)} refs held in {b.relative_to(v)}")
@@ -194,7 +195,7 @@ def main():
         if scan.returncode:
             raise SystemExit("the secret scan flagged the vault commit; nothing pushed (the originals are private and untouched)")
         sh("git", "push", "-q", "origin", "HEAD:main", cwd=v)
-        with (ROOT / "machines" / a.machine / "vault.jsonl").open("a") as f:
+        with (pathlib.Path(record_path(ROOT, "machines")) / a.machine / "vault.jsonl").open("a") as f:
             f.writelines(json.dumps(l) + "\n" for l in log)
     finally:
         subprocess.run(["rm", "-rf", str(tmp)])

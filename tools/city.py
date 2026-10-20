@@ -15,10 +15,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.join(os.path.expanduser("~"), "SISO_Workspace")
 HOME = os.path.expanduser("~")
 OUT = os.path.join(WS, "_data", "estate", "city")
-SHELL = os.path.join(WS, "Great_Library_of_SISO", "banks", "siso-shell")
+SHELL = os.path.join(os.path.dirname(os.path.dirname(REPO)), "library", "banks", "siso-shell")
 MACHINE = os.environ.get("ESTATE_MACHINE", "laptop")
 DISTRICTS = ["SISO_Agency", "SISO_Agents", "Great_Library_of_SISO", "personal", "(the map)"]
 e = H.escape
@@ -68,7 +71,7 @@ def repo_of(path, repos):
 # ---------------------------------------------------------------- facts
 
 def code_record():
-    p = os.path.join(REPO, "machines", MACHINE, "code.json")
+    p = record_path(REPO, "machines", MACHINE, "code.json")
     d = load(p)
     if not d or time.time() - os.path.getmtime(p) > 55 * 60:
         subprocess.run([sys.executable, os.path.join(HERE, "code.py"), "--machine", MACHINE], capture_output=True, timeout=300)
@@ -170,7 +173,7 @@ def remote_servers(machines):
                       [[f"<code>{e(j['unit'])}</code>", chip(f"{j['health']} ({j['detail']})", good.get(j["health"])), e(j["what"][:90]), e(j["owner"])]
                        for j in sorted(jobs, key=lambda j: (j["health"] != "failed", j["unit"]))])
     for name in machines:
-        rec = load(os.path.join(REPO, "machines", name, "servers.json"))
+        rec = load(record_path(REPO, "machines", name, "servers.json"))
         if not rec:
             continue
         units = rec.get("services", []) + [dict(c, unit=c["name"], cwd="container " + c.get("image", "")) for c in rec.get("containers", [])]
@@ -183,7 +186,7 @@ def remote_servers(machines):
                       [[f"<code>{e(u['unit'])}</code>", chip(u.get("health", "?") + (f" ({u['status']})" if u.get("status") else ""), good.get(u.get("health"))),
                         f"<code>{e((u.get('cwd') or u.get('program') or '').lstrip('!'))}</code>"]
                        for u in sorted(units, key=lambda u: (u.get("health") != "failed", u["unit"]))])
-    return (f"<p><b>{total} services, containers and jobs on {1 + sum(1 for n in machines if load(os.path.join(REPO, 'machines', n, 'servers.json')))} machines; "
+    return (f"<p><b>{total} services, containers and jobs on {1 + sum(1 for n in machines if load(record_path(REPO, 'machines', n, 'servers.json')))} machines; "
             f"{chip(f'{bad} failing', not bad)}.</b></p>" + html)
 
 
@@ -325,9 +328,9 @@ def build():
     lots, map_n = vacant()
     lit = {s["repo"] for s in srv if s["repo"]}
     busy = {a["repo"] for a in ags if a["repo"] and a["status"] == "working"}
-    backup = load(os.path.join(REPO, "machines", MACHINE, "backup.json"), {"results": []})
+    backup = load(record_path(REPO, "machines", MACHINE, "backup.json"), {"results": []})
     bstat = collections.Counter(r.get("status") for r in backup["results"])
-    census = load(os.path.join(REPO, "machines", MACHINE, "census.json"), {})
+    census = load(record_path(REPO, "machines", MACHINE, "census.json"), {})
     machines = load(os.path.join(REPO, "plan", "machines.json"), {"machines": {}})["machines"]
     inbox = open(os.path.join(REPO, ".agents", "INBOX.md")).read() if os.path.exists(os.path.join(REPO, ".agents", "INBOX.md")) else ""
     inbox_open = len(re.findall(r"^- \[ \]", inbox, re.M))
@@ -340,14 +343,14 @@ def build():
     alerts = []
     if bstat.get("error") or bstat.get("held") or bstat.get("missing"):
         alerts.append(f"Last nightly backup ({age(backup.get('ran_at'))}): {bstat.get('error', 0)} errors, {bstat.get('held', 0)} held by the secret scan, {bstat.get('missing', 0)} missing.")
-    fleet = load(os.path.join(REPO, "machines", "fleet.json"), {}).get("machines", {})
+    fleet = load(record_path(REPO, "machines", "fleet.json"), {}).get("machines", {})
     down = [f"{n} ({r['state']} since {(r.get('down_since') or '')[:10]})" for n, r in fleet.items()
             if r.get("state") not in (None, "ok", "not-probed")]
     if down:
         alerts.append("Machines not answering: " + ", ".join(e(x) for x in down) + " (estate fleet).")
     if keys:
         alerts.append(f"{len(keys)} repos keep key files outside the store: " + ", ".join(e(x["path"]) for x in keys[:6]) + ".")
-    hist = [json.loads(l) for l in open(os.path.join(REPO, "machines", MACHINE, "code-history.jsonl"))] if os.path.exists(os.path.join(REPO, "machines", MACHINE, "code-history.jsonl")) else []
+    hist = [json.loads(l) for l in open(record_path(REPO, "machines", MACHINE, "code-history.jsonl"))] if os.path.exists(record_path(REPO, "machines", MACHINE, "code-history.jsonl")) else []
     if hist and hist[-1].get("fell"):
         alerts.append("Fell below the building code at the last scoring: " + ", ".join(e(p) for p in hist[-1]["fell"]) + ".")
     if unreg:
@@ -383,7 +386,7 @@ def build():
                table(["Owner", "Buildings", "Up to code", "Mean score", "Unassigned"],
                      [[f"<b>{e(k)}</b><br><span class='muted'>{e(seats.get(k, ''))}</span>", str(v["buildings"]), str(v["up_to_code"]),
                        f"{int(v['mean_score'] * 100)}%", str(v["state_land"]) if v["state_land"] else ""] for k, v in league])))
-    births = load(os.path.join(REPO, "machines", MACHINE, "births.json"), {})
+    births = load(record_path(REPO, "machines", MACHINE, "births.json"), {})
     if births:
         cut = "2026-09-23T05"
         recent = collections.Counter((r["kind"], r["verdict"]) for r in births.get("rows", []) if r["at"] >= cut and r["kind"] in ("worktree", "clone", "init", "generator"))
@@ -398,7 +401,7 @@ def build():
     ch.append(("dark", "Going dark", "our buildings with no work of their own in 90 days: they go to GitHub only (reform 2), after a check that GitHub holds everything",
                table(["Building", "Owner", "Idle"], [[f"<code>{e(x['path'])}</code>", e(x.get("seat", "")), "never worked in" if x.get("idle_days", 0) > 9999 else f"{int(x['idle_days'])} days"] for x in dark])
                if dark else "<p>No dormant buildings.</p>"))
-    fixes = [json.loads(l) for l in open(os.path.join(REPO, "machines", MACHINE, "fixes.jsonl"))] if os.path.exists(os.path.join(REPO, "machines", MACHINE, "fixes.jsonl")) else []
+    fixes = [json.loads(l) for l in open(record_path(REPO, "machines", MACHINE, "fixes.jsonl"))] if os.path.exists(record_path(REPO, "machines", MACHINE, "fixes.jsonl")) else []
     day = [f for f in fixes if f["at"] >= time.strftime("%Y-%m-%dT%H:%M", time.localtime(time.time() - 86400))]
     ch.append(("law", "The law at work", "routine fixes the Estate Manager made on its own in the last 24 hours, under plan/fix-policies.json (decided by Shaan, 25 Sep)",
                table(["When", "Building", "Fix", "Commit"], [[e(f["at"][11:16]), f"<code>{e(f['repo'])}</code>", e(f["policy"]),

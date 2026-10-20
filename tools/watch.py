@@ -12,19 +12,28 @@ Events inside node_modules, build output and the vault (_archive) are ignored. T
 recount; this keeps the record right between counts.
 """
 import ctypes, ctypes.util, json, os, statistics, subprocess, sys, threading, time
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 sys.path.insert(0, HERE)
 WS = os.path.expanduser("~/SISO_Workspace")
 MACHINE = os.environ.get("SISO_MACHINE") or ("laptop" if sys.platform == "darwin" else os.uname().nodename)
-REPOS = os.path.join(REPO, "machines", MACHINE, "repos.json")
-LOG = os.path.join(REPO, "machines", MACHINE, "watch.jsonl")
+REPOS = record_path(REPO, "machines", MACHINE, "repos.json")
+LOG = record_path(REPO, "machines", MACHINE, "watch.jsonl")
 NOISE = ("/node_modules/", "/.next/", "/dist/", "/build/", "/.venv/", "/__pycache__/", "/.turbo/", "/.cache/",
          "/_archive/", "/.git/objects/", "/.git/lfs/")
 GIT_SIGNAL = ("/.git/HEAD", "/.git/packed-refs", "/.git/logs/HEAD", "/.git/config")   # never .git/index: git status writes it
 SETTLE = 3.0          # seconds of quiet before acting on a burst (a clone or a checkout fires thousands of events)
 MAXWAIT = 10.0        # a folder that never goes quiet (an agent writing all day) is acted on after this anyway
+DESCRIBE_INTERVAL = 60.0
+LOG_BYTES = 5 * 1024 * 1024
+last_described = {}
+watched_gitdirs = {}
+repo_signatures = {}
 
 pending, lock, wake = {}, threading.Lock(), threading.Event()
 
@@ -33,8 +42,17 @@ def on_event(path):
     p = path.rstrip("/") + "/"
     if any(n in p for n in NOISE) or "/.t/" in p:
         return
+    # Directory-level FSEvents can name refs/ rather than the changed HEAD file.
+    roots = [root for gitdir, root in watched_gitdirs.items()
+             if path == gitdir or path.startswith(gitdir + "/")]
+    if not roots:
+        return
     with lock:
-        pending.setdefault(path.rstrip("/"), time.time())
+        for root in roots:
+            signature = repo_signature(root)
+            if signature != repo_signatures.get(root):
+                pending.setdefault(root, time.time())
+                repo_signatures[root] = signature
     wake.set()
 
 
@@ -65,7 +83,7 @@ def fsevents(paths, latency=1.0):
     arr = (ctypes.c_void_p * len(paths))(*[cf.CFStringCreateWithCString(None, p.encode(), 0x08000100) for p in paths])
     cfpaths = cf.CFArrayCreate(None, arr, len(paths), None)
     since_now = 0xFFFFFFFFFFFFFFFF
-    stream = cs.FSEventStreamCreate(None, callback, None, cfpaths, since_now, latency, 0x2 | 0x10)  # NoDefer, FileEvents
+    stream = cs.FSEventStreamCreate(None, callback, None, cfpaths, since_now, latency, 0x2)  # directory events, no FileEvents
     cs.FSEventStreamScheduleWithRunLoop(stream, cf.CFRunLoopGetCurrent(), kCFRunLoopDefaultMode)
     if not cs.FSEventStreamStart(stream):
         raise SystemExit("FSEventStreamStart failed")
@@ -147,7 +165,9 @@ def apply(found, batch):
             if path in by:
                 doc["repos"][by[path]] = None
         else:
-            rec = describe(path)
+            previous = doc["repos"][by[path]] if path in by else None
+            rec = describe(path, quick=True, previous=previous)
+            last_described[path] = time.monotonic()
             if path in by:
                 doc["repos"][by[path]] = rec
             else:
@@ -157,12 +177,98 @@ def apply(found, batch):
     save_repos(doc)
     subprocess.run([sys.executable, os.path.join(HERE, "register.py")], capture_output=True, timeout=120)
     now = time.time()
+    rotate_log()
     with open(LOG, "a") as f:
         for l in lines:
             first = min((t for p, t in batch.items() if p == l["path"] or p.startswith(l["path"] + "/")), default=now)
             l.update(at=time.strftime("%Y-%m-%dT%H:%M:%S%z"), lag_s=round(now - first, 1))
             f.write(json.dumps(l) + "\n")
     return lines
+
+
+def rotate_log(now=None):
+    """Bound the active log; retain seven days nearby and archive older rotations."""
+    now = time.time() if now is None else now
+    log = Path(LOG)
+    if log.exists() and log.stat().st_size >= LOG_BYTES:
+        log.rename(log.with_name(log.name + f".{time.time_ns()}"))
+    for old in log.parent.glob(log.name + ".*"):
+        if old.is_file() and now - old.stat().st_mtime > 7 * 86400:
+            archive = log.parent / "_archive" / "watch"
+            archive.mkdir(parents=True, exist_ok=True)
+            old.rename(archive / old.name)
+
+
+def git_roots(doc):
+    roots = {}
+    for row in doc["repos"]:
+        path = Path(row["path"])
+        dot = path / ".git"
+        if dot.is_file():
+            try:
+                target = dot.read_text().strip().removeprefix("gitdir: ")
+                dot = (path / target).resolve()
+            except OSError:
+                continue
+        if dot.is_dir():
+            roots[str(dot)] = str(path)
+    return roots
+
+
+def poll_repos():
+    """Discover worktrees without subscribing to their source/build output."""
+    while True:
+        time.sleep(DESCRIBE_INTERVAL)
+        known = {r["path"] for r in load_repos()["repos"]}
+        candidates = set(known)
+        base = Path(WS) / "_data/worktrees"
+        if base.is_dir():
+            for family in base.iterdir():
+                if family.is_dir() and not family.is_symlink():
+                    candidates.update(str(p) for p in family.iterdir() if p.is_dir() and not p.is_symlink())
+        with lock:
+            for path in candidates:
+                signature = repo_signature(path)
+                if signature != repo_signatures.get(path) and (path in known or signature):
+                    pending.setdefault(path, time.time())
+                repo_signatures[path] = signature
+        wake.set()
+
+
+def repo_signature(path):
+    roots = git_roots({"repos": [{"path": path}]})
+    if not roots:
+        return None
+    dot = Path(next(iter(roots)))
+    dirs = [dot]
+    common = dot / "commondir"
+    if common.is_file():
+        try:
+            dirs.append((dot / common.read_text().strip()).resolve())
+        except OSError:
+            pass
+    result = []
+    try:
+        head = (dot / "HEAD").read_text().strip()
+    except OSError:
+        head = ""
+    for directory in dirs:
+        files = [directory / n for n in ("HEAD", "config", "logs/HEAD")]
+        # Remote fetches change thousands of refs shared by every worktree;
+        # the quick refresh only needs this checkout's current local branch.
+        if head.startswith("ref: refs/heads/") and ".." not in head:
+            files.append(directory / head.removeprefix("ref: "))
+        # Packed refs can contain the checked-out branch after git pack-refs.
+        packed = directory / "packed-refs"
+        if not files[-1].exists() and packed.is_file():
+            files.append(packed)
+        for file in files:
+            try:
+                stat = file.stat()
+                result.append((str(file), stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                pass
+    return tuple(sorted(result))
 
 
 def worker():
@@ -176,7 +282,19 @@ def worker():
             pending.clear()
             wake.clear()
         known = {r["path"] for r in load_repos()["repos"]}
-        found = changes(batch, known)
+        found = {}
+        for path in batch:
+            exists = os.path.exists(os.path.join(path, ".git"))
+            if not exists and path in known:
+                found[path] = "gone"
+            elif exists:
+                wait = DESCRIBE_INTERVAL - (time.monotonic() - last_described.get(path, -DESCRIBE_INTERVAL))
+                if wait > 0:
+                    with lock:
+                        pending.setdefault(path, batch[path])
+                        wake.set()
+                else:
+                    found[path] = "git" if path in known else "new"
         if found:
             try:
                 for l in apply(found, batch):
@@ -203,9 +321,15 @@ def status():
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "-h"
     if cmd == "serve":
+        watched_gitdirs.update(git_roots(load_repos()))
+        for path in set(watched_gitdirs.values()):
+            repo_signatures[path] = repo_signature(path)
+        if not watched_gitdirs:
+            raise SystemExit("no known Git directories; run inventory first")
         threading.Thread(target=worker, daemon=True).start()
-        print(f"watching {WS}", flush=True)
-        fsevents([WS])
+        threading.Thread(target=poll_repos, daemon=True).start()
+        print(f"watching {len(watched_gitdirs)} Git directories; repo updates at most once per 60s", flush=True)
+        fsevents(list(watched_gitdirs))
     elif cmd == "status":
         sys.exit(status())
     else:

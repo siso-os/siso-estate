@@ -11,6 +11,9 @@ import argparse, json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.join(os.path.expanduser("~"), "SISO_Workspace")
 sys.path.insert(0, HERE)
 from doors import first_line, gh_description  # noqa: E402  the same one-line description the district doors use
@@ -69,12 +72,12 @@ SEEN = {}   # (repo, policy) -> epoch first seen: machines/<m>/mess-seen.json (P
 
 
 def seen_path(machine):
-    return os.path.join(REPO, "machines", machine, "mess-seen.json")
+    return record_path(REPO, "machines", machine, "mess-seen.json")
 
 
 def receipt(machine, rel, policy, commit, pushed, note=""):
     first = SEEN.get(f"{rel}\t{policy}")
-    with open(os.path.join(REPO, "machines", machine, "fixes.jsonl"), "a") as f:
+    with open(record_path(REPO, "machines", machine, "fixes.jsonl"), "a") as f:
         f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "repo": rel, "policy": policy, "commit": commit,
                             "pushed": pushed, **({"waited_min": round((time.time() - first) / 60)} if first and commit else {}),
                             **({"note": note} if note else {})}) + "\n")
@@ -109,7 +112,7 @@ def door_text(x):
 def moved_citations():
     """Door citations a recorded move explains, from the last docs check (tools/docs_check.py)."""
     try:
-        d = json.load(open(os.path.join(REPO, "machines", "laptop", "docs-check.json")))
+        d = json.load(open(record_path(REPO, "machines", "laptop", "docs-check.json")))
     except (OSError, ValueError):
         return {}
     return {b["path"]: b["moved"] for b in d.get("by_door", []) if b.get("moved")}
@@ -204,7 +207,7 @@ def stats(machine):
     import statistics
     cut = time.time() - 7 * 86400
     waits, n = [], 0
-    for line in open(os.path.join(REPO, "machines", machine, "fixes.jsonl")):
+    for line in open(record_path(REPO, "machines", machine, "fixes.jsonl")):
         r = json.loads(line)
         try:
             t = time.mktime(time.strptime(r["at"][:19], "%Y-%m-%dT%H:%M:%S"))
@@ -221,7 +224,7 @@ def stats(machine):
     oldest = max((time.time() - v for v in open_.values()), default=0) / 3600
     out = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "fixes_7d": n, "timed": len(waits),
            "median_wait_min": statistics.median(waits) if waits else None, "open": len(open_), "oldest_open_h": round(oldest, 1)}
-    with open(os.path.join(REPO, "machines", machine, "law-stats.json"), "w") as fh:
+    with open(record_path(REPO, "machines", machine, "law-stats.json"), "w") as fh:
         json.dump(out, fh, indent=1)
     print(f"law, last 7 days: {n} fixes; median wait from first seen to fixed "
           f"{out['median_wait_min']} min over {len(waits)} timed; {len(open_)} routine messes open (oldest {out['oldest_open_h']} h, most are skipped: busy, dormant, someone's edits)")
@@ -235,7 +238,7 @@ def main():
     a = ap.parse_args()
     if a.stats:
         return stats(a.machine)
-    code = json.load(open(os.path.join(REPO, "machines", a.machine, "code.json")))
+    code = json.load(open(record_path(REPO, "machines", a.machine, "code.json")))
     busy = working_agents()
     done = 0
     try:

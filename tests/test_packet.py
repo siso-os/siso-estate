@@ -147,7 +147,7 @@ class PacketTest(unittest.TestCase):
             self.assertEqual((code, self.names(out)), (0, ["Card", "Rules"]))
             card = self.section(out, "Card")
             self.assertIn("island: halo", card)
-            self.assertIn("law: Cam's code stays in camronkellman/halocrm; never copy it off", card)
+            self.assertIn("law: Cam's code stays in HALO-AGENCY/halocrm; never copy it off", card)
 
 
 if __name__ == "__main__":

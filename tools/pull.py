@@ -19,6 +19,9 @@ sys.path.insert(0, HERE)
 import ledger
 
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 MINI, VAULT = "mac-mini-herdr", "/Volumes/SISO-STORAGE-VAULT/cold-storage/laptop"
@@ -43,7 +46,7 @@ def find_retired(target, machine=MACHINE):
     """{path (relative to ~/SISO_Workspace), url} for repos retired to GitHub whose path contains TARGET."""
     out = {}
     t = os.path.relpath(os.path.expanduser(target), WS) if os.path.expanduser(target).startswith(WS) else target
-    for e in jl(os.path.join(REPO, "machines", machine, "retired.jsonl")):
+    for e in jl(record_path(REPO, "machines", machine, "retired.jsonl")):
         if e.get("act") != "retire":
             continue
         for r in e.get("repos", []):
@@ -142,7 +145,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     to = os.path.abspath(os.path.expanduser(a.to)) if a.to else None
     m = json.load(open(os.path.join(REPO, "plan", "storage-map.json")))
-    rp = os.path.join(REPO, "machines", MACHINE, "repos.json")
+    rp = record_path(REPO, "machines", MACHINE, "repos.json")
     repos = ledger.repo_index(json.load(open(rp)) if os.path.exists(rp) else {})
     print(f"pull {a.target}" + ("" if a.run else "  (dry run; add --run to do it)"))
     hits = find_place(a.target, m["places"])

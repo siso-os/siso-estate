@@ -15,6 +15,9 @@ from concurrent.futures import ThreadPoolExecutor
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 GH_LIMIT = 100 * 1024 * 1024
 
 
@@ -51,8 +54,8 @@ def piles_of(path):
 def main():
     machine = arg("--machine", os.environ.get("ESTATE_MACHINE", "laptop"))
     min_b, min_n = arg("--min-mb", 20) * 1024 * 1024, arg("--min-files", 300)
-    census = json.load(open(os.path.join(REPO, "machines", machine, "census.json")))
-    inv = json.load(open(os.path.join(REPO, "machines", machine, "repos.json")))["repos"]
+    census = json.load(open(record_path(REPO, "machines", machine, "census.json")))
+    inv = json.load(open(record_path(REPO, "machines", machine, "repos.json")))["repos"]
     live = [r["path"] for r in inv if r["kind"] == "repo" and r.get("untracked") and r["path"].startswith(WS + "/")
             and not any(x in r["path"] for x in ("/_archive/", "/_data/", "/_reference/", "/node_modules/", "/.t/"))]
     out, small = [], defaultdict(lambda: [0, 0])
@@ -71,7 +74,7 @@ def main():
     out.sort(key=lambda p: -p["bytes"])
     doc = {"machine": machine, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "census_at": census["at"], "piles": out,
            "small": {k: {"files": v[0], "bytes": v[1]} for k, v in sorted(small.items(), key=lambda kv: -kv[1][1])}}
-    dst = os.path.join(REPO, "machines", machine, "piles.json")
+    dst = record_path(REPO, "machines", machine, "piles.json")
     json.dump(doc, open(dst, "w"), indent=1)
     open(dst, "a").write("\n")
     tot = sum(p["bytes"] for p in out)

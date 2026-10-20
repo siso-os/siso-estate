@@ -8,11 +8,14 @@ houses, retirements), the last nightly run, the census now and how it moved, ope
 and which agents are running where. --mark ends a session: it records the current heads and census as the new marker
 (machines/<m>/manager-seen.json, committed with the records) so the next manager sees only what is new.
 """
-import json, os, re, shutil, subprocess, sys, time
+import glob, json, os, re, shutil, subprocess, sys, time
 
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 
 
 def sh(*a, cwd=None):
@@ -53,7 +56,7 @@ def numbers(c):
 
 def main():
     m = sys.argv[sys.argv.index("--machine") + 1] if "--machine" in sys.argv else os.environ.get("ESTATE_MACHINE", "laptop")
-    rec = os.path.join(REPO, "machines", m)
+    rec = record_path(REPO, "machines", m)
     marker_p = os.path.join(rec, "manager-seen.json")
     mk = load(marker_p, {})
     since = mk.get("at", "1970")
@@ -68,6 +71,27 @@ def main():
     print(f"Last manager session: {since[:16] if mk else 'none recorded (first boot: read .agents/HANDOFF.md State sections)'}")
     free = shutil.disk_usage(HOME).free / 2**30  # a full disk crashed herdr and every agent on 24 Sep
     print(f"Disk free: {free:.1f} GB" + ("  !! under 10 GB: free space before any big write (du -sm ~/SISO_Workspace/_data/*)" if free < 10 else "") + "\n")
+    trend_paths = [record_path(REPO, "machines", machine, "storage-trend.jsonl") for machine in ("laptop", "mini")]
+    trends = []
+    for p in trend_paths:
+        rows = []
+        try:
+            rows = [json.loads(line) for line in open(p) if line.strip()]
+        except (OSError, ValueError):
+            pass
+        if rows:
+            trends.append(rows[-1])
+    trends = [t for t in trends if t.get("line")]
+    if trends:
+        print("Disk-floor runtime:")
+        for trend in trends:
+            print("- " + trend["line"])
+            change = trend.get("change_24h_gib")
+            if isinstance(change, (int, float)) and change <= -10:
+                print("  !! %s storage trend exceeds 10 GiB/day: investigate the top growers before the next large write" % trend.get("machine", "machine"))
+            if sum(g.get("grew_gib", 0) for g in trend.get("growers", [])) > 10:
+                print("  !! %s category growth exceeds 10 GiB/day" % trend.get("machine", "machine"))
+        print()
 
     print("## Changed since then")
     for name, path, base in (("siso-estate", REPO, mk.get("heads", {}).get("estate")), ("the map (siso-city)", WS, mk.get("heads", {}).get("map"))):
@@ -122,7 +146,7 @@ def main():
         print("- none open")
 
     print("\n## Inbox: messes other agents reported (.agents/INBOX.md, the estate-keeper skill)")
-    ib = os.path.join(REPO, ".agents", "INBOX.md")
+    ib = record_path(REPO, ".agents", "INBOX.md")
     items = [l for l in (open(ib).read().splitlines() if os.path.exists(ib) else []) if l.startswith("- [ ]")]
     for l in items:
         print(l[:160])

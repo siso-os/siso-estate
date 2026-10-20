@@ -12,6 +12,9 @@ import argparse, collections, json, os, plistlib, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 OUT = os.path.join(WS, "docs", "operations", "LAPTOP-MAP.md")
@@ -31,8 +34,8 @@ def ago(t):
 
 def build(machine):
     zones = load(os.path.join(REPO, "plan", "home-zones.json"), {"zones": {}})["zones"]
-    repos = load(os.path.join(REPO, "machines", machine, "repos.json"), {"repos": []})["repos"]
-    dots = load(os.path.join(REPO, "machines", machine, "dots.json"), {})
+    repos = load(record_path(REPO, "machines", machine, "repos.json"), {"repos": []})["repos"]
+    dots = load(record_path(REPO, "machines", machine, "dots.json"), {})
     machines = load(os.path.join(REPO, "plan", "machines.json"), {})
     planes = load(os.path.join(REPO, "plan", "data-planes.json"), {"planes": []})["planes"]
     root_md = open(os.path.join(WS, "AGENTS.md")).read()

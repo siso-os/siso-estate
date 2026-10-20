@@ -10,16 +10,22 @@ committed in it and no file in it (outside .git and build folders) changed for -
 rest with its own refusals: every branch, stash and edit pushed and verified first, secret-flagged work held, nothing
 removed while a process uses it or a worktree lives elsewhere, and the repo keeps its place on the map
 (`estate restore --only <path> --run` brings it back). HALO (ADR 0007), private data and parents of nested repos stay.
-Laptop only; the list comes from machines/laptop/repos.json (the census).
+The list comes from machines/<machine>/repos.json (the machine census). Laptop targets 100 GiB free;
+the Mini targets 60 GiB. A missing census safely produces no eligible repos.
 """
-import argparse, datetime as D, json, os, re, shutil, subprocess, sys, time
+import argparse, datetime as D, json, os, re, shutil, socket, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.expanduser("~/SISO_Workspace")
-SKIP = re.compile(r"(?i)halo|oracle|/personal/(private|data|legal)(/|$)|/_archive/|/\.credentials/|/\.lake/|/SISO_Agents/siso-estate(/|$)")
+SKIP = re.compile(r"(?i)halo|oracle|halocrm|fahmy|bykonz|whatsapp|life|cam-|kellman|/personal/(private|data|legal)(/|$)|/_archive/|/\.credentials/|/\.lake/|/SISO_Agents/siso-estate(/|$)")
 STATE = os.path.expanduser("~/.local/state/estate/repo-offload.json")  # path -> when houses last held it
 BUILD = {".git", "node_modules", ".next", "dist", "build", "target", ".turbo", ".venv", "venv", ".cache", ".svelte-kit"}
+_HOST = os.environ.get("ESTATE_MACHINE") or os.uname().nodename.lower()
+MACHINE = "laptop" if _HOST == "laptop" or _HOST.startswith("shaans-macbook") else "mini" if "mini" in _HOST else _HOST
 
 
 def free_gib():
@@ -52,7 +58,11 @@ def load_held():
 
 
 def cold_repos(idle_hours):
-    repos = json.load(open(os.path.join(REPO, "machines", "laptop", "repos.json")))["repos"]
+    census = record_path(REPO, "machines", MACHINE, "repos.json")
+    try:
+        repos = json.load(open(census)).get("repos", [])
+    except (OSError, ValueError):
+        return
     live = [r["path"] for r in repos if os.path.exists(os.path.join(r["path"], ".git"))]
     now = D.datetime.now(D.timezone.utc)
     cutoff = time.time() - idle_hours * 3600
@@ -79,26 +89,35 @@ def main():
     ap.add_argument("--run", action="store_true")
     a = ap.parse_args()
     host = os.environ.get("ESTATE_MACHINE") or os.uname().nodename.lower()
-    if not (host == "laptop" or host.startswith("shaans-macbook")):
-        print("repo-offload: laptop only")
-        return 0
+    machine = MACHINE
+    census = record_path(REPO, "machines", MACHINE, "repos.json")
+    if not os.path.isfile(census) or time.time() - os.path.getmtime(census) > 86400:
+        if not a.run:
+            print("repo-offload: machine inventory missing/stale; real run refreshes it before selection")
+            return 0
+        refreshed = subprocess.run([sys.executable, os.path.join(HERE, "inventory.py"), "--machine", MACHINE, "--jobs", "4"],
+                                   capture_output=True, text=True, timeout=900, env=dict(os.environ, ESTATE_MACHINE=MACHINE))
+        if refreshed.returncode:
+            print("repo-offload: inventory refresh failed; nothing retired")
+            return 1
     global HELD
     HELD = load_held()
     free = free_gib()
-    if free >= a.target_gib:
-        print(f"repo-offload: {free:.1f} GiB free, target {a.target_gib:.0f}: nothing to do")
+    target = a.target_gib if "--target-gib" in sys.argv else (60 if machine == "mini" else 100)
+    if free >= target:
+        print(f"repo-offload: {free:.1f} GiB free, target {target:.0f}: nothing to do")
         return 0
     cands = sorted(((du_kib(p), p) for p in cold_repos(a.idle_hours)), reverse=True)[: a.max]
-    print(f"repo-offload: {free:.1f} GiB free, target {a.target_gib:.0f}; {len(cands)} cold repos")
-    why = "repo-offload: idle %dh, laptop under %d GiB free (Shaan 16 Oct: GitHub holds it, the laptop keeps the working set)" % (a.idle_hours, a.target_gib)
+    print(f"repo-offload: {free:.1f} GiB free, target {target:.0f}; {len(cands)} cold repos")
+    why = "repo-offload: idle %dh, %s under %d GiB free" % (a.idle_hours, machine, target)
     for kib, p in cands:
         if not a.run:
             print(f"  would retire {kib / 1048576:6.2f} GiB  {os.path.relpath(p, WS)}")
             continue
-        if free_gib() >= a.target_gib:
+        if free_gib() >= target:
             break
         out = subprocess.run([sys.executable, os.path.join(HERE, "houses.py"), "retire", p, "--run", "--why", why],
-                             capture_output=True, text=True, timeout=3600)
+                             capture_output=True, text=True, timeout=3600, env=dict(os.environ, ESTATE_MACHINE=MACHINE))
         last = [l for l in (out.stdout + out.stderr).splitlines() if l.strip()][-1:] or ["(no output)"]
         print(f"  {kib / 1048576:6.2f} GiB  {os.path.relpath(p, WS)}: {last[0].strip()[:160]}")
         if os.path.exists(os.path.join(p, ".git")):

@@ -7,6 +7,7 @@
   estate map                  the city map: every district and what lives there
   estate doctor               layout checks (exit 1 on a failure)
   estate inventory            re-scan every git repo on this machine
+  estate storage --help      read-only preflight for one future allocation
   estate backup plan|run      back up disk-only work to private GitHub (see tools/backup.py)
   estate move SRC DST --why   move a folder to its planned home, leaving a compat link
   estate data plan|run PLANE  backup of data outside repos (encrypted, or plain private) (plan/data-planes.json)
@@ -34,6 +35,8 @@
   estate fleet [--json] [--all]   every machine exec-probed now: free cores, RAM, disk, what runs there, what it is for
                               (tools/fleet.py, plan/machines.json); `estate fleet pick <job-kind> [--n N]` names the box,
                               `estate fleet pull <machine> <job>` brings results to _data/fleet/<machine>/<job>/
+  estate storage --machine M --category C --postcode P --peak-bytes N --growth-buffer-bytes N
+                              read-only preflight for a future allocation; nonzero means defer it
   estate wait <tool> [--timeout S]   block until no process runs tools/<tool> (backup, vault, census, ...); the safe
                               way to wait: a shell `until ! pgrep -f` loop matches its own command line and never ends
   estate render               the island render: the whole estate as a three.js voxel territory, from the register
@@ -47,6 +50,9 @@ import glob, json, os, re, socket, subprocess, sys, time
 
 BIN = os.path.dirname(os.path.realpath(__file__))
 REPO = os.path.dirname(BIN)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 
@@ -82,7 +88,7 @@ def first_line(path):
 
 def candidates():
     m = machine()
-    inv = load_json(os.path.join(REPO, "machines", m, "repos.json"), {"repos": []})
+    inv = load_json(record_path(REPO, "machines", m, "repos.json"), {"repos": []})
     aliases = load_json(os.path.join(REPO, "plan", "aliases.json"), {}).get("aliases", {})
     out = {}
     for r in inv["repos"]:
@@ -206,7 +212,7 @@ def where(q, n=6):
 
 def register():
     try:
-        return json.load(open(os.path.join(REPO, "machines", "register.json")))
+        return json.load(open(record_path(REPO, "machines", "register.json")))
     except (OSError, ValueError):
         return {}
 
@@ -280,7 +286,7 @@ def cmd_report(rest):
         return 2
     who = os.environ.get("HERDR_AGENT_NAME") or os.path.basename(os.getcwd())
     line = f"- [ ] {time.strftime('%Y-%m-%d')} {who}: {what}"
-    with open(os.path.join(REPO, ".agents", "INBOX.md"), "a") as f:
+    with open(record_path(REPO, ".agents", "INBOX.md"), "a") as f:
         f.write(line + "\n")
     print(f"filed for the Estate Manager: {line}")
     return 0
@@ -305,7 +311,7 @@ def cmd_doctor(_):
         if os.path.islink(p) and not os.path.exists(p):
             fails.append(f"broken link at the root: {name}")
     # rooms inside a building (ADR 0006) and temporary test repos left in one: live, from each repo on this disk
-    for r in load_json(os.path.join(REPO, "machines", machine(), "repos.json"), {}).get("repos", []):
+    for r in load_json(record_path(REPO, "machines", machine(), "repos.json"), {}).get("repos", []):
         rp = r.get("path", "")
         if not rp.startswith(WS + "/") or "/_archive/" in rp or "/_data/" in rp:
             continue
@@ -318,17 +324,17 @@ def cmd_doctor(_):
             n = sum(1 for x in os.listdir(t) if os.path.exists(os.path.join(t, x, ".git")))
             if n:
                 fails.append(f"temporary git repos left in a repo: {rel}/.t ({n}; a test's leftovers, clean them or ignore them)")
-    lk = load_json(os.path.join(REPO, "machines", machine(), "links.json"), {})
+    lk = load_json(record_path(REPO, "machines", machine(), "links.json"), {})
     live = [x for x in lk.get("broken", []) if x.get("kind", "live") == "live"]
     if live:
         c = lk.get("counts", {})
         warns.append(f"broken symlinks: {len(live)} live (+{c.get('owned', 0)} Oracle/HALO, {c.get('vendor', 0)} in vendor trees, {c.get('ignored', 0)} gitignored; python3 tools/links.py --list; --repair fixes those broken by a recorded move), e.g. {live[0]['path'][:100]}")
-    bj = load_json(os.path.join(REPO, "machines", machine(), "backup.json"), {"results": []})
+    bj = load_json(record_path(REPO, "machines", machine(), "backup.json"), {"results": []})
     bad = [r for r in bj["results"] if r.get("status") in ("error", "held", "needs-create")]
     for r in bad:
         warns.append(f"backup {r['status']}: {r['path']}")
     # new mess, from the last census: each of these was cleaned to zero or explained on 24 Sep, so any line is news
-    c = load_json(os.path.join(REPO, "machines", machine(), "census.json"), {})
+    c = load_json(record_path(REPO, "machines", machine(), "census.json"), {})
     ok2 = spec.get("second_homes_ok", {})  # a second home kept on purpose, with its reason (plan/layout.json)
     for repo, homes in (c.get("duplicates", {}).get("live_duplicate_homes") or {}).items():
         if repo in ok2:
@@ -355,14 +361,14 @@ def cmd_doctor(_):
     r = subprocess.run([sys.executable, os.path.join(REPO, "tools", "laptop-map.py"), "--check"], capture_output=True, text=True)
     if r.returncode:
         warns.append("the laptop map is out of date: run `estate refresh --light`")
-    dots = load_json(os.path.join(REPO, "machines", machine(), "dots.json"), {}).get("findings", {})
+    dots = load_json(record_path(REPO, "machines", machine(), "dots.json"), {}).get("findings", {})
     for k in ("tool state tracked in git", "runtime files tracked", "worktrees inside a repo", "key stores outside .credentials"):
         if dots.get(k):
             warns.append(f"hidden folders, {k}: {len(dots[k])} (estate dots; ADR 0015), e.g. {dots[k][0]['path']}")
-    code = load_json(os.path.join(REPO, "machines", machine(), "code.json"), {})
+    code = load_json(record_path(REPO, "machines", machine(), "code.json"), {})
     if code:
         warns.append(f"building code: {code.get('up_to_code')} of {code.get('repos')} live repos up to code (estate code; the city page shows which)")
-    reg = load_json(os.path.join(REPO, "machines", "register.json"), {}).get("issues", {})
+    reg = load_json(record_path(REPO, "machines", "register.json"), {}).get("issues", {})
     for key, label in (("I1 one repo on two live plots (second homes)", "second homes"),
                        ("I1 a repo archived on GitHub still has a live plot beside its vault plot", "archived repos with a live plot"),
                        ("I6 rooms inside a building (.worktrees, ADR 0006)", "worktrees inside a building"),
@@ -377,7 +383,7 @@ def cmd_doctor(_):
             if line.startswith("DRIFT "):
                 warns.append(f"launchd {line[6:]} (estate services; plan/services.json, A11)")
         subprocess.run([sys.executable, os.path.join(REPO, "tools", "services.py"), "ports"], capture_output=True, text=True)
-        pj = load_json(os.path.join(REPO, "machines", machine(), "ports.json"), {})
+        pj = load_json(record_path(REPO, "machines", machine(), "ports.json"), {})
         if pj.get("collisions"):
             warns.append(f"port collisions: {pj['collisions']} (python3 tools/services.py ports; P5)")
         if pj.get("unregistered_dev_servers"):
@@ -449,6 +455,8 @@ def main():
         return passthrough("services.py", rest or ["check"])
     if c == "fleet":
         return passthrough("fleet.py", rest)
+    if c == "storage":
+        return passthrough("storage.py", rest)
     if c in ("run", "stop", "running"):
         return passthrough("run.py", [{"run": "start"}.get(c, c), *rest])
     if c == "refresh":
@@ -479,6 +487,8 @@ def main():
         return passthrough("render.py", rest)
     if c == "inventory":
         return passthrough("inventory.py", ["--machine", machine(), *rest])
+    if c == "storage":
+        return passthrough("storage.py", rest)
     if c == "backup":
         return passthrough("backup.py", [*rest[:1], "--machine", machine(), *rest[1:]])
     if c == "move":

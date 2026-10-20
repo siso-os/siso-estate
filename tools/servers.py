@@ -18,6 +18,9 @@ import argparse, json, os, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 OURS = ("sisodias/", "Lordsisodia/", "lordsisodia/")
 CLIENTS = ("camronkellman/",)
 
@@ -117,7 +120,7 @@ def scan(name, m):
 
 
 def write(name, rec):
-    d = os.path.join(REPO, "machines", name)
+    d = record_path(REPO, "machines", name)
     os.makedirs(d, exist_ok=True)
     p = os.path.join(d, "servers.json")
     if rec["status"] != "scanned" and os.path.exists(p):   # keep the last good scan; note the miss
@@ -137,7 +140,7 @@ def targets(names):
         if missing:
             raise SystemExit(f"no ssh alias in plan/machines.json for: {', '.join(missing)}")
         return {n: ms[n] for n in names}
-    return {n: m for n, m in ms.items() if m.get("ssh")}
+    return {n: m for n, m in ms.items() if m.get("ssh") and not m.get("retired")}
 
 
 def main():
@@ -154,7 +157,7 @@ def main():
             print(f"{name}: {rec['status']}" + (f" {s}" if s else f" ({rec.get('error', '')})"))
             bad += rec["status"] != "scanned"
         else:
-            p = os.path.join(REPO, "machines", name, "servers.json")
+            p = record_path(REPO, "machines", name, "servers.json")
             if not os.path.exists(p):
                 print(f"{name}: never scanned")
                 continue

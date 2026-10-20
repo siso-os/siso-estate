@@ -12,12 +12,15 @@ import argparse, json, os, subprocess, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.expanduser("~/SISO_Workspace")
 
 
 def pending_backup(src, machine):
-    plan_p = os.path.join(REPO, "machines", machine, "backup-plan.json")
-    log_p = os.path.join(REPO, "machines", machine, "backup.log")
+    plan_p = record_path(REPO, "machines", machine, "backup-plan.json")
+    log_p = record_path(REPO, "machines", machine, "backup.log")
     running = subprocess.run(["pgrep", "-f", "tools/backup.py run"], capture_output=True).returncode == 0
     if not running or not os.path.exists(plan_p):
         return 0

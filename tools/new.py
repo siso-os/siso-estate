@@ -29,6 +29,9 @@ import legend  # partners and their clients (plan/legend.json)
 HOME = os.path.expanduser("~")
 WS = os.environ.get("ESTATE_WS", os.path.join(HOME, "SISO_Workspace"))
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 KINDS = {"app": "a user-facing app: run it with its README's dev command on a port from `estate run` (to come)",
          "service": "a long-running service: where it runs and its port go in .agents/building.json",
          "package": "a library other buildings import: tests and releases live here",
@@ -176,7 +179,7 @@ def main():
     ap.add_argument("--machine", default=os.environ.get("ESTATE_MACHINE", "laptop"))
     a = ap.parse_args()
     model = load(os.environ.get("ESTATE_MODEL", os.path.join(REPO, "plan", "model.json")))
-    register = load(os.environ.get("ESTATE_REGISTER", os.path.join(REPO, "machines", "register.json")), {})
+    register = load(os.environ.get("ESTATE_REGISTER", record_path(REPO, "machines", "register.json")), {})
     p = plan(a.address, a.kind, a.what, a.keeper, model, register)
     if "halo" in (p["island"]["id"], p["partner"]) and not a.halo_ok:
         p["problems"].append("HALO: pass --halo-ok \"<the HALO lead's words>\" (ADR 0007)")
@@ -226,7 +229,7 @@ def main():
     if o is not None and "ESTATE_WS" not in os.environ:
         o["owners"].append({"path": p["folder"], "seat": p["card"]["keeper"], "why": f"born by estate new {time.strftime('%Y-%m-%d')}"})
         dump_owners(o, ow)
-    rec = os.path.join(REPO, "machines", a.machine, "births-by-road.jsonl") if "ESTATE_WS" not in os.environ else os.path.join(WS, "births-by-road.jsonl")
+    rec = record_path(REPO, "machines", a.machine, "births-by-road.jsonl") if "ESTATE_WS" not in os.environ else os.path.join(WS, "births-by-road.jsonl")
     with open(rec, "a") as f:
         f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "folder": p["folder"], **p["card"], "github": made_gh, "made_by": "estate new"}) + "\n")
     print(f"  made: {p['folder']} (door, card, .agents core, first commit); run `estate register` to see it on the map")

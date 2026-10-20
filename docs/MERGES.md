@@ -118,7 +118,7 @@ Six of the 34 became real work and keep their repo (`SISOCRM`, `siso-inbox-chatw
 - **CRM: one compound.**
   - `SISOCRM` is the kernel.
   - The Teable fork, which appears twice, becomes one.
-  - The Twenty fork and the running instance (`hq/infra/twenty`) sit under it.
+  - The Twenty fork and the running instance (`agency/hq/infra/twenty`) sit under it.
 - **The client platform absorbs its modules.** `siso-event-ticketing` joins it. `siso-booking-kit` and
   `siso-chat-widget` are adopted forks: keep them only if SISO changed them; otherwise they go to the Library's study
   bank.
@@ -301,9 +301,9 @@ Expected result: GitHub goes from 234 repos to about 70 live plus 1 vault.
   - Chatwoot, Listmonk, Teable, Twenty, booking-kit and chat-widget sit under the client platform or the CRM compound;
   - the Plane fork sits under Internal Labs;
   - AFFiNE sits under notes.
-- **The control room goes to `hq/`:** `siso-internal`, `siso-internal-labs` and the console. Only one of them is the
+- **The control room goes to `agency/hq/`:** `siso-internal`, `siso-internal-labs` and the console. Only one of them is the
   UI hub where agents' work lands (still Shaan's call; the default is Internal Labs).
-- **SISO's own business agents** (`hq/agents/*`: agency_dash, agency-pm, builder, cto, growth-pm, ...) stay HQ's roster.
+- **SISO's own business agents** (`agency/hq/agents/*`: agency_dash, agency-pm, builder, cto, growth-pm, ...) stay HQ's roster.
   `siso-social-outreach-agents` joins them. The agent side keeps only infrastructure.
 - **Industries are one idea in four places,** so `hq/industries/<vertical>/` becomes the source. Each vertical holds
   its pilot partner, its modules and its research pack; `siso-industry-packs` is the published form, and Action Model's

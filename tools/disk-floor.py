@@ -8,8 +8,9 @@ folders that grew since the last look.
 Writes ~/.local/state/estate/disk-floor.json (always: free, floor, ok, swap, top growers) and, while free is under the
 floor, one line per run to ~/.local/state/estate/alerts.log, the console card `estate-disk-floor`, and `disk_alert` on
 ESTATE's owner card (~/.local/state/a0/owners/ESTATE.json, read by Agent Zero). Folders are
-sized (du, nice 19) at most every 30 min, or every 10 min while under the floor; growers are the biggest increases
-between the last two sizings. Agent Zero, 15 Oct: the full disk crashed SISO Code 5 times (ENOSPC) and killed every
+sized (du, nice 19, background IO) only when free space has fallen 2 GB since the last sizing (at most every 30 min),
+and at least every 6 h; growers are the biggest increases between the last two sizings. Agent Zero, 19 Oct: a full du
+every 5-10 min under the floor (52k filesystem calls in 3 s on ~/.local/state/siso-code alone) was part of a load of 25. Agent Zero, 15 Oct: the full disk crashed SISO Code 5 times (ENOSPC) and killed every
 agent turn; "under 25 GB free it writes a line Agent Zero and the Agent Base header can read, and it names the top
 growers since the last check". Clearing stays with ESTATE (skill estate-space-sweep); this only watches.
 
@@ -20,17 +21,22 @@ disk. A client is an established connection to the server's listening port (an o
 counted from the first run that saw no client. Listing only, never a kill; laptop-health's keep.txt is honoured, and
 the live show's Chrome (halo-press) is never a candidate.
 """
-import glob, json, os, re, shutil, subprocess, sys, time
+import glob, json, os, re, shutil, socket, subprocess, sys, time
+import importlib.util
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
+from estate_state import record_path
 
 HOME = os.path.expanduser("~")
+HOST = socket.gethostname().lower()
+MACHINE = os.environ.get("ESTATE_MACHINE") or ("mini" if "mini" in HOST else "laptop")
 STATE = os.path.join(HOME, ".local", "state", "estate")
 STATUS = os.path.join(STATE, "disk-floor.json")
 SIZES = os.path.join(STATE, "disk-floor-sizes.json")
 ALERTS = os.path.join(STATE, "alerts.log")
 OWNER_CARD = os.path.join(HOME, ".local", "state", "a0", "owners", "ESTATE.json")  # Agent Zero reads owner cards
 FS = "/System/Volumes/Data"
-FLOOR_GIB = 25
-EVERY_OK, EVERY_LOW = 1800, 600
+FLOOR_GIB = 60 if MACHINE == "mini" else 100
+EVERY_MAX, EVERY_MIN, DROP = 6 * 3600, 1800, 2 * 2**30  # size when free fell DROP, never twice in EVERY_MIN
 DEV = os.path.join(STATE, "disk-floor-dev.json")  # pid -> when it was last seen with a client (or first seen without)
 DEV_IDLE = 3600
 DEV_RE = re.compile(r"\bvite\b|next dev|next-server|next start|webpack|astro dev|storybook|nuxt|remix dev|"
@@ -44,6 +50,10 @@ WATCH = ["~/SISO_Workspace/_data/worktrees/*/*", "~/SISO_Workspace/_data/*", "~/
          "~/Library/Application Support/*", "~/Library/Containers/*", "~/Downloads", "~/Desktop", "~/Documents",
          "~/Library/pnpm", "~/.npm", "~/.cargo", "~/.rustup"]
 SKIP = ("~/SISO_Workspace/_data/worktrees", "~/SISO_Workspace/_data")  # parents of deeper patterns
+
+_trend_spec = importlib.util.spec_from_file_location("storage_trend", os.path.join(os.path.dirname(__file__), "storage-trend.py"))
+storage_trend = importlib.util.module_from_spec(_trend_spec)
+_trend_spec.loader.exec_module(storage_trend)
 
 
 def gib(b):
@@ -75,7 +85,7 @@ def paths():
 def size_all():
     sizes = {}
     for p in paths():
-        r = subprocess.run(["nice", "-n", "19", "du", "-sk", "-x", p], capture_output=True, text=True, timeout=600)
+        r = subprocess.run(["taskpolicy", "-b", "nice", "-n", "19", "du", "-sk", "-x", p], capture_output=True, text=True, timeout=600)
         try:
             sizes[p] = int(r.stdout.split()[0]) * 1024
         except (IndexError, ValueError):
@@ -202,10 +212,23 @@ def main():
     now = int(time.time())
     free = shutil.disk_usage(FS).free
     low = free < FLOOR_GIB * 2**30
+    # Publish the cheap status before deep sizing/footprint probes. A slow du
+    # must not hide the floor or the guard's daily trend for several minutes.
+    trend_path = record_path(os.path.dirname(os.path.dirname(__file__)), "machines", MACHINE, "storage-trend.jsonl")
+    rows = storage_trend.load_lines(trend_path)
+    trend_line = rows[-1].get("line", "") if rows else "trend pending guard run"
+    initial = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "machine": MACHINE,
+               "free_gib": gib(free), "floor_gib": FLOOR_GIB, "ok": not low,
+               "storage_trend": trend_line,
+               "line": "%s %s %.1f GiB free (floor %d); %s" % ("LOW" if low else "OK", MACHINE, gib(free), FLOOR_GIB, trend_line)}
+    with open(STATUS + ".tmp", "w") as f:
+        json.dump(initial, f, indent=1)
+    os.replace(STATUS + ".tmp", STATUS)
     sz = load(SIZES, {"runs": []})
     runs = sz["runs"]
-    if not runs or now - runs[-1]["t"] >= (EVERY_LOW if low else EVERY_OK):
-        runs.append({"t": now, "sizes": size_all()})
+    age = now - runs[-1]["t"] if runs else None
+    if age is None or age >= EVERY_MAX or (age >= EVERY_MIN and runs[-1].get("free", free) - free >= DROP):
+        runs.append({"t": now, "free": free, "sizes": size_all()})
         sz["runs"] = runs[-2:]
         with open(SIZES + ".tmp", "w") as f:
             json.dump(sz, f)
@@ -230,6 +253,13 @@ def main():
         for d in dev[:3]))) if dev else ""
     if dev:
         st["line"] += "; " + st["dev_line"]
+    runtime_trend = record_path(os.path.dirname(os.path.dirname(__file__)), "machines", MACHINE, "storage-trend.jsonl")
+    trend_rows = storage_trend.load_lines(runtime_trend)
+    trend = trend_rows[-1] if trend_rows else storage_trend.load(os.path.join(STATE, "storage-trend.json"), {})
+    if not trend.get("line"):
+        trend = {"line": "%s free %.1f GiB (trend pending guard run)" % (MACHINE, gib(free))}
+    st["storage_trend"] = trend["line"]
+    st["line"] += "; " + trend["line"]
     with open(STATUS + ".tmp", "w") as f:
         json.dump(st, f, indent=1)
     os.replace(STATUS + ".tmp", STATUS)

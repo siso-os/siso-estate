@@ -15,6 +15,9 @@ import json, os, signal, socket, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.expanduser("~/SISO_Workspace")
 PORTS = os.path.join(REPO, "plan", "ports.json")
 RUNS = os.path.join(REPO, "plan", "runs.json")
@@ -26,7 +29,7 @@ def machine():
     return os.environ.get("SISO_MACHINE") or ("laptop" if sys.platform == "darwin" else os.uname().nodename)
 
 
-RUNNING = os.path.join(REPO, "machines", machine(), "running.json")
+RUNNING = record_path(REPO, "machines", machine(), "running.json")
 
 
 def load(p, default):

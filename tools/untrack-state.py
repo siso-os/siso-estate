@@ -14,6 +14,9 @@ import json, os, re, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 WS = os.path.join(os.path.expanduser("~"), "SISO_Workspace")
 RUNTIME = re.compile(r"(^|/)(\.omc(/|$)|\.claude/(session-context|feedback)(/|$)|\.claude/(instance-uuid|settings\.local)\.json$|"
                      r"\.wrangler(/|$)|supabase/\.temp(/|$)|\.playwright-cli(/|$)|\.serena/cache(/|$))")
@@ -26,7 +29,7 @@ def git(top, *a):
 
 def repos_with_state():
     out = {}
-    for r in json.load(open(os.path.join(REPO, "machines", "laptop", "repos.json")))["repos"]:
+    for r in json.load(open(record_path(REPO, "machines", "laptop", "repos.json")))["repos"]:
         top = str(r["path"])
         if r.get("kind") == "worktree" or not top.startswith(WS + "/") or "/_archive/" in top or "/_reference/" in top \
                 or "/_data/" in top or not os.path.isdir(top):
@@ -74,7 +77,7 @@ def main():
         ahead = git(top, "rev-list", "--count", "@{u}..HEAD").stdout.strip()
         pushed = scan.returncode == 0 and ahead == "1" and git(top, "push", "-q").returncode == 0
         total += len(files)
-        with open(os.path.join(REPO, "machines", "laptop", "repoints.jsonl"), "a") as f:
+        with open(record_path(REPO, "machines", "laptop", "repoints.jsonl"), "a") as f:
             f.write(json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "repo": rel, "act": "untrack runtime state",
                                 "files": len(files), "paths": paths[:20], "commit": git(top, "rev-parse", "--short", "HEAD").stdout.strip(),
                                 "pushed": pushed}) + "\n")

@@ -19,6 +19,9 @@ import legend  # partners and their clients (plan/legend.json)
 HOME = os.path.expanduser("~")
 WS = os.path.join(HOME, "SISO_Workspace")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "tools"))
+from estate_state import record_path
+
 SKIP = re.compile(r"/(node_modules|\.t|\.lake|vendor)/")
 # the estate's own housekeeping commits (22-24 Sep: one-line headers, repoints, memory, snapshots) are not activity
 HOUSEKEEPING = re.compile(r"^(AGENTS\.md|CLAUDE\.md|estate[: ]|memory: commit this project's agent memory|Automatic backup|"
@@ -130,10 +133,10 @@ def projects():
 
 def main():
     machine = sys.argv[sys.argv.index("--machine") + 1] if "--machine" in sys.argv else os.environ.get("ESTATE_MACHINE", "laptop")
-    inv = [r for r in json.load(open(os.path.join(REPO, "machines", machine, "repos.json")))["repos"]
+    inv = [r for r in json.load(open(record_path(REPO, "machines", machine, "repos.json")))["repos"]
            if r["kind"] == "repo" and not SKIP.search(r["path"] + "/")]
-    census = json.load(open(os.path.join(REPO, "machines", machine, "census.json")))
-    rp = os.path.join(REPO, "machines", machine, "repoints.jsonl")
+    census = json.load(open(record_path(REPO, "machines", machine, "census.json")))
+    rp = record_path(REPO, "machines", machine, "repoints.jsonl")
     if os.path.exists(rp):
         for l in open(rp):
             f = json.loads(l).get("file")
@@ -184,7 +187,7 @@ def main():
     for name in census["github"]["not_on_map"].get("GitHub only, no place on the map", []):
         rows.append({"district": "GitHub only", "path": f"github.com/sisodias/{name}", "group": "not on the laptop", "what": "",
                      "repos": 1, "is_repo": True, "size_bytes": 0, "can_leave_now": True, "laptop_only": {}, "last_active": None})
-    gh = {g["name"]: g for g in json.load(open(os.path.join(REPO, "machines", "github", "sisodias.json")))}
+    gh = {g["name"]: g for g in json.load(open(record_path(REPO, "machines", "github", "sisodias.json")))}
     for r in rows:
         if r["district"] == "GitHub only":
             g = gh.get(r["path"].rsplit("/", 1)[1], {})
@@ -193,7 +196,7 @@ def main():
     for i, r in enumerate(rows, 1):
         r["n"] = i
     doc = {"machine": machine, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "projects": rows}
-    dst = os.path.join(REPO, "machines", machine, "projects.json")
+    dst = record_path(REPO, "machines", machine, "projects.json")
     json.dump(doc, open(dst, "w"), indent=1)
     open(dst, "a").write("\n")
     for r in rows:
