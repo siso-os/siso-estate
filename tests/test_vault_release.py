@@ -25,6 +25,14 @@ class VaultRelease(unittest.TestCase):
         self.assertFalse(self.source.exists())
         self.assertEqual((self.destination / 'authored.txt').read_text(), 'must be preserved')
 
+    def test_single_file_transfer_is_read_back_before_release(self):
+        source = self.root / 'single.txt'
+        source.write_text('authored single file')
+        with patch.object(vault, 'held', return_value=[]):
+            self.assertTrue(vault.checked_transfer(str(source), str(self.destination)))
+        self.assertFalse(source.exists())
+        self.assertEqual((self.destination / 'single.txt').read_text(), 'authored single file')
+
     def test_empty_output_with_failed_second_rsync_never_releases(self):
         original = vault.run
         def call(*args, **kw):
@@ -36,12 +44,50 @@ class VaultRelease(unittest.TestCase):
         self.assertTrue((self.source / 'authored.txt').exists())
 
     def test_new_writer_after_copy_keeps_newer_source(self):
-        def changed(_):
-            (self.source / 'authored.txt').write_text('newer work')
-            return []
-        with patch.object(vault, 'held', side_effect=changed):
+        original = vault.run
+        def changed(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if '-a' in args:
+                (Path(args[-2]) / 'authored.txt').write_text('newer work')
+            return result
+        with patch.object(vault, 'held', return_value=[]), patch.object(vault, 'run', side_effect=changed):
             self.assertFalse(vault.checked_transfer(str(self.source), str(self.destination)))
         self.assertEqual((self.source / 'authored.txt').read_text(), 'newer work')
+
+    def test_later_writer_recreating_original_path_is_preserved(self):
+        original = vault.run
+        def recreated(*args, **kwargs):
+            if '-a' in args:
+                self.assertFalse(self.source.exists())
+                self.source.mkdir()
+                (self.source / 'new-worker.txt').write_text('new work')
+            return original(*args, **kwargs)
+        with patch.object(vault, 'held', return_value=[]), patch.object(vault, 'run', side_effect=recreated):
+            self.assertTrue(vault.checked_transfer(str(self.source), str(self.destination)))
+        self.assertEqual((self.source / 'new-worker.txt').read_text(), 'new work')
+        self.assertEqual((self.destination / 'authored.txt').read_text(), 'must be preserved')
+
+    def test_unpublished_side_branch_history_is_preserved_without_changing_checkout(self):
+        wip = vault.wip_tool()
+        def git(*args):
+            return subprocess.run(['git', '-C', str(self.source), *args], check=True, capture_output=True, text=True).stdout.strip()
+        remote = self.root / 'history.git'
+        subprocess.run(['git', 'init', '-q', '--bare', str(remote)], check=True)
+        git('init', '-q', '-b', 'main'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid')
+        git('add', '.'); git('commit', '-qm', 'base'); git('remote', 'add', 'origin', str(remote)); git('push', '-q', 'origin', 'main')
+        head = git('rev-parse', 'HEAD')
+        git('checkout', '-qb', 'unpublished')
+        (self.source / 'branch-work.txt').write_text('unique side branch work')
+        git('add', '.'); git('commit', '-qm', 'side work'); side = git('rev-parse', 'HEAD'); git('checkout', '-q', 'main')
+        with patch.object(wip, 'leaks', return_value=[]), patch.object(wip, 'receipt'):
+            sha = vault.preserve_history(str(self.source), head, wip, 'sisodias', 'fixture')
+        self.assertIsNotNone(sha)
+        self.assertEqual(git('rev-parse', 'HEAD'), head)
+        self.assertEqual(git('rev-parse', sha + '^{tree}'), git('rev-parse', head + '^{tree}'))
+        self.assertEqual(git('merge-base', side, sha), side)
+        self.assertTrue(wip.already_remote(str(self.source), clean=False))
+        with patch.object(wip, 'already_remote', return_value=False), patch.object(wip, 'leaks', return_value=['*']):
+            self.assertIsNone(vault.preserve_history(str(self.source), head, wip, 'sisodias', 'fixture'))
 
     def test_registered_runner_is_never_selected_from_retired_manifest(self):
         (self.source / 'MANIFEST.md').write_text('ARCHIVED_UNREGISTERED runner=siso-mini-halo-1')
@@ -56,6 +102,11 @@ class VaultRelease(unittest.TestCase):
         info = self.source / '.git/objects/info'; info.mkdir(parents=True)
         (info / 'alternates').write_text(str(self.root / 'outside-objects') + '\n')
         self.assertIn('Git object store outside the transfer root', vault.git_links(str(self.source)))
+
+    def test_absolute_git_worktree_binding_is_held(self):
+        subprocess.run(['git', '-C', str(self.source), 'init', '-q'], check=True)
+        subprocess.run(['git', '-C', str(self.source), 'config', 'core.worktree', str(self.source)], check=True)
+        self.assertIn('Git worktree binding cannot safely follow the transfer', vault.git_links(str(self.source)))
 
     def test_zero_idle_hours_does_not_use_bsd_find_negative_zero(self):
         with patch.object(vault, 'HOT_HOURS', 0), patch.object(vault, 'run', side_effect=AssertionError('no age gate')):

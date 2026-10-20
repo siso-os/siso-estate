@@ -46,6 +46,7 @@ TIPS_FILE = record_path(REPO, "machines", "{machine}", "pushed-tips.json")
 # Ephemeral by reading: test temp dirs (oracle-streaming acceptance tests mkdtemp into .t/),
 # harness caches and harness-made backups of third-party plugins.
 SKIP = [
+    (re.compile(r"/_data/siso-ci-work/tmp/ccrec[^/]*/"), "claude-cloud recovery test fixture (agents/harness/tests/claude-cloud.test.mjs)"),
     (re.compile(r"/\.t/"), "test temp dir (acceptance tests mkdtemp here)"),
     (re.compile(r"^~/\.codex/(\.tmp|backups|vendor_imports)/"), "Codex cache/backup of third-party code"),
     (re.compile(r"^~/\.claude/plugins/marketplaces/"), "Claude plugin marketplace cache"),
@@ -62,7 +63,9 @@ GH_URL = re.compile(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$")
 
 
 def sh(cmd, cwd=None, env=None, timeout=900, input=None):
-    r = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, input=input)
+    # A deployment may replace our inherited cwd during a long backup. Resolve
+    # the current source path for each command, including bare ls-remote calls.
+    r = subprocess.run(cmd, cwd=cwd or REPO, env=env, capture_output=True, text=True, timeout=timeout, input=input)
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
@@ -90,6 +93,7 @@ def github_list(max_age=3600, owner=OWNER):
     every repo created after it look deleted (24 Sep: sisodias/kellman and sisodias/halo-agency were read as deleted and
     would have been bundled instead of pushed), so a failed refresh keeps the old list and says so."""
     f = record_path(REPO, "machines", "github", f"{owner}.json")
+    os.makedirs(os.path.dirname(f), exist_ok=True)
     if not os.path.exists(f) or time.time() - os.path.getmtime(f) > max_age:
         code, out, err = sh(["gh", "repo", "list", owner, "--limit", "5000",
                              "--json", "name,nameWithOwner,visibility,isArchived,isFork,diskUsage,pushedAt,description"], timeout=180)
@@ -776,7 +780,10 @@ def run_item(it, machine, create):
             url = f"https://github.com/{it['target']}.git"
             if act == "new-repo":
                 if not create:
-                    res["status"] = "needs-create"
+                    res["held_copy"] = held_copy(path, machine, it["slug"], live, wip, False, whole=is_repo)
+                    res["status"] = "data-backed" if held_safe(res) else "error"
+                    if res["status"] == "error":
+                        res["error"] = "encrypted backup of repository without a destination failed"
                     return res
                 code, out, err = sh(["gh", "repo", "view", it["target"], "--json", "name"])
                 if code != 0:
@@ -932,7 +939,7 @@ def run(machine, only, jobs, create, resume=False):
                 r = json.loads(line)
             except Exception:
                 continue
-            if r.get("status") in ("pushed", "bundled", "data-backed", "clean", "skip", "nothing-to-push", "held"):
+            if r.get("status") in ("pushed", "bundled", "data-backed", "clean", "skip", "nothing-to-push") or (r.get("status") == "held" and held_safe(r)):
                 done.add(r["path"])
         items = [i for i in items if i["path"] not in done]
     out_path = record_path(REPO, "machines", machine, "backup.json")

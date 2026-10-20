@@ -94,7 +94,8 @@ class Retention(unittest.TestCase):
         current = latest.read_bytes()
         for mode in ("bundle-error", "timeout", "oversize"):
             self.mode = mode
-            with patch.object(backup, "MAX_BUNDLE", 1 if mode == "oversize" else backup.MAX_BUNDLE):
+            with patch.object(backup, "MAX_BUNDLE", 1 if mode == "oversize" else backup.MAX_BUNDLE), \
+                    patch.object(backup, "held_copy", return_value={"status": "error", "error": "fixture"}):
                 result = self.run_item("overlay")
             self.assertEqual(result["status"], "error", result)
             self.assertEqual(latest.read_bytes(), current)
@@ -108,6 +109,33 @@ class Retention(unittest.TestCase):
         self.assertEqual(result["status"], "held", result)
         held.assert_not_called()
         self.assertEqual(self.pushes, [])
+
+    def test_unknown_destination_is_encrypted_without_creating_repository(self):
+        for state, expected in (("pushed", "data-backed"), ("error", "error")):
+            with patch.object(backup, "held_copy", return_value={"status": state}) as held:
+                result = self.run_item("new-repo")
+            self.assertEqual(result["status"], expected, result)
+            self.assertFalse(held.call_args.args[5])
+            self.assertEqual(self.pushes, [])
+
+    def test_recovery_fixture_is_skipped_but_real_source_is_not(self):
+        row = {"path": backup.HOME + "/SISO_Workspace/_data/siso-ci-work/tmp/ccrec-fixture/repo"}
+        self.assertEqual(backup.classify(row, {}, {})["action"], "skip")
+        self.assertFalse(any(rx.search("~/SISO_Workspace/projects/ccrec-product") for rx, _ in backup.SKIP))
+
+    def test_default_command_cwd_survives_replaced_inherited_directory(self):
+        old = os.getcwd()
+        vanished = self.root / "vanished"
+        vanished.mkdir()
+        try:
+            os.chdir(vanished)
+            vanished.rmdir()
+            with patch.object(backup, "REPO", str(self.repo)):
+                code, out, _ = backup.sh(["git", "rev-parse", "--show-toplevel"])
+            self.assertEqual(code, 0)
+            self.assertEqual(out, str(self.repo.resolve()))
+        finally:
+            os.chdir(old)
 
 
 if __name__ == "__main__":

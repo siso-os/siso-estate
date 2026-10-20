@@ -57,6 +57,15 @@ def git_links(p):
     """Worktree links that cross the folder's edge, either way: moving would break them."""
     bad = []
     for g in run("find", p, "-name", ".git").stdout.split():
+        if os.path.isdir(g):
+            binding = run('git', '--git-dir', g, 'config', '--path', '--get', 'core.worktree')
+            if binding.returncode not in (0, 1):
+                bad.append('Git worktree binding unavailable')
+            elif binding.returncode == 0:
+                value = binding.stdout.strip()
+                target = os.path.realpath(os.path.join(g, value))
+                if os.path.isabs(value) or not target.startswith(os.path.realpath(p) + '/'):
+                    bad.append('Git worktree binding cannot safely follow the transfer')
         alternate = os.path.join(g, 'objects', 'info', 'alternates')
         if os.path.isfile(alternate):
             with open(alternate) as f:
@@ -90,10 +99,6 @@ def checked_transfer(p, dest, snapshot=None, verify_existing=False):
             return False
     else:
         os.makedirs(dest, exist_ok=False)
-        source = p if isfile else p + "/"
-        copy = run("nice", "-n", "19", "rsync", "-a", source, dest + "/")
-        if copy.returncode:
-            return False
     if held(p):
         print('  KEPT: source acquired an open handle before quarantine', flush=True)
         return False
@@ -102,8 +107,17 @@ def checked_transfer(p, dest, snapshot=None, verify_existing=False):
         return False
     os.rename(p, quarantine)
     try:
+        if held(quarantine):
+            print('  KEPT: source became active during quarantine', flush=True)
+            return False
         source = quarantine if isfile else quarantine + "/"
         destination = os.path.join(dest, os.path.basename(p)) if isfile else dest + "/"
+        if not verify_existing:
+            # Copy the isolated tree, so a census/status poll cannot rewrite
+            # Git's index halfway through a long copy. Later writers at p stay.
+            copy = run("nice", "-n", "19", "rsync", "-a", source, destination)
+            if copy.returncode:
+                return False
         verify = run("nice", "-n", "19", "rsync", "-acni", "--delete", source, destination)
         if verify.returncode or verify.stdout.strip():
             print('  KEPT: checksum command exit %d; %d changed entries' % (verify.returncode, len(verify.stdout.splitlines())), flush=True)
@@ -179,6 +193,58 @@ def snapshot_matches(path, sha):
                        for name in extras.stdout.split('\0'))
 
 
+def preserve_history(path, snapshot, wip, owner, name):
+    """One WIP merge commit keeps every unpublished branch/tag history reachable."""
+    if wip.already_remote(path, clean=False):
+        return snapshot
+    stashes = wip.git(path, 'stash', 'list', '--format=%H')
+    advertised = wip.git(path, 'ls-remote', 'origin')
+    local = wip.git(path, 'for-each-ref', '--format=%(objectname)', 'refs/heads', 'refs/tags')
+    if stashes.returncode or stashes.stdout.strip() or advertised.returncode or local.returncode:
+        return None
+    known = {line.split()[0] for line in advertised.stdout.splitlines() if line.split()} & set(local.stdout.splitlines())
+    # Include local remote refs in the fresh coverage proof, as already_remote does.
+    cached = wip.git(path, 'for-each-ref', '--format=%(objectname)', 'refs/remotes')
+    if cached.returncode:
+        return None
+    known |= {line.split()[0] for line in advertised.stdout.splitlines() if line.split()} & set(cached.stdout.splitlines())
+    missing = wip.git(path, 'rev-list', 'HEAD', '--branches', '--tags', '--not', *sorted(known))
+    if missing.returncode:
+        return None
+    uncovered = set(missing.stdout.splitlines())
+    parents = [snapshot]
+    for tip in sorted(set(local.stdout.splitlines())):
+        commit = wip.git(path, 'rev-parse', tip + '^{commit}')
+        if commit.returncode:
+            return None
+        value = commit.stdout.strip()
+        if value in uncovered and value not in parents:
+            parents.append(value)
+    tree = wip.git(path, 'rev-parse', snapshot + '^{tree}')
+    if tree.returncode:
+        return None
+    args = ['-c', 'user.name=SISO Estate', '-c', 'user.email=estate@siso.local', 'commit-tree', tree.stdout.strip()]
+    for parent in parents:
+        args += ['-p', parent]
+    result = wip.git(path, *args, '-m', 'estate WIP: preserve all local histories before vault transfer')
+    sha = result.stdout.strip()
+    if result.returncode or wip.leaks(path, sha):
+        return None
+    branch = 'estate/wip-' + wip.DAY.replace('-', '') + '-vault-history-' + sha[:16]
+    old = wip.git(path, 'rev-parse', '--verify', '--quiet', 'refs/heads/' + branch)
+    if old.returncode not in (0, 1) or old.returncode == 0 and old.stdout.strip() != sha:
+        return None
+    if wip.git(path, 'update-ref', 'refs/heads/' + branch, sha).returncode:
+        return None
+    if not wip.push_wip(path, branch, owner, name):
+        return None
+    remote = wip.git(path, 'ls-remote', 'origin', 'refs/heads/' + branch)
+    if remote.returncode or not remote.stdout.split() or remote.stdout.split()[0] != sha or not wip.already_remote(path, clean=False):
+        return None
+    wip.receipt(path=path, result='all local histories pushed and verified', sha=sha, branch=branch, parents=len(parents))
+    return sha
+
+
 def cold_clones(paths):
     wip = wip_tool()
     roots = paths or glob.glob(os.path.join(wip.WS, '_data/worktrees/*/*'))
@@ -251,7 +317,13 @@ def main():
                     print('  KEPT: primary WIP not verified')
                     continue
                 snapshot = result.get('sha') or wip.git(p, 'rev-parse', 'HEAD').stdout.strip()
-            if not snapshot_matches(p, snapshot):
+            url = wip.git(p, 'remote', 'get-url', 'origin')
+            match = __import__('re').search(r'github\.com[:/](sisodias|lordsisodia|siso-os|halo-agency)/([^/]+?)(?:\.git)?$', url.stdout.strip(), __import__('re').I)
+            if url.returncode or not match:
+                print('  KEPT: original remote authorization unavailable')
+                continue
+            snapshot = preserve_history(p, snapshot, wip, match.group(1).lower(), match.group(2))
+            if not snapshot or not snapshot_matches(p, snapshot):
                 print('  KEPT: authored data is not covered by the pushed snapshot')
                 continue
         if not checked_transfer(p, dest, snapshot=snapshot, verify_existing=bool(a.verify_existing)):
