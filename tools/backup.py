@@ -69,8 +69,10 @@ def sh(cmd, cwd=None, env=None, timeout=900, input=None):
     return r.returncode, r.stdout.strip(), r.stderr.strip()
 
 
-def git(path, *args, env=None, timeout=900):
-    code, out, err = sh(["git", "-C", path, *args], env=env, timeout=timeout)
+def git(path, *args, env=None, timeout=30):
+    # Git metadata can point at an unavailable vault mount. Bound probes while
+    # retaining the explicit longer budgets for bundle creation and pushes.
+    code, out, err = sh(["git", "--no-optional-locks", "-C", path, *args], env=env, timeout=timeout)
     return code, out, re.sub(r"://[^/@\s]+@", "://<redacted>@", err)  # never log credentials from a remote URL
 
 
@@ -126,6 +128,9 @@ def owned(owner):
     return (owner or "").lower() in {o.lower() for o in OWNED}
 
 
+_GITHUB_ALIASES = {}
+
+
 def resolve_github(owner, repo, gh):
     """Return ("owner/name", visibility) of the owned repo behind a GitHub owner/repo, following the Lordsisodia migration."""
     r = repo.lower()
@@ -134,6 +139,17 @@ def resolve_github(owner, repo, gh):
     if owned(owner) and owner != OWNER and f"{owner}/{r}".lower() in gh:
         x = gh[f"{owner}/{r}".lower()]
         return x["nameWithOwner"], x["visibility"]
+    # Listing an organization omits old names after a GitHub rename. Ask the
+    # repository endpoint before treating an owned source as deliberately deleted.
+    if owned(owner):
+        key = f"{owner}/{r}".lower()
+        if key not in _GITHUB_ALIASES:
+            code, out, _ = sh(["gh", "api", f"repos/{owner}/{repo}", "--jq", "[.full_name, .private] | @tsv"], timeout=120)
+            fields = out.split("\t") if code == 0 else []
+            _GITHUB_ALIASES[key] = ((fields[0], "PRIVATE" if fields[1] == "true" else "PUBLIC")
+                                    if len(fields) == 2 and "/" in fields[0] and owned(fields[0].split("/")[0])
+                                    and fields[1] in ("true", "false") else (None, None))
+        return _GITHUB_ALIASES[key]
     if owner == "Lordsisodia":
         for cand in (f"legacy-lordsisodia-{r}", r):
             if cand in gh:
@@ -728,10 +744,20 @@ def run_item(it, machine, create):
             return res
         is_repo = it["kind"] != "worktree"
         live = it.get("live_remotes") or []
-        branches = unpushed_branches(path, live) if is_repo else []
         if act == "worktree-of-new-repo":
             act = "new-repo"  # its main repo is created first (serial), then this pushes wip only
             is_repo = False
+        if act == "new-repo" and not create:
+            # This route never transports plaintext Git objects: held_copy is
+            # precisely the existing transport for secret-bearing histories.
+            # Scanning the whole history before encrypting it adds no boundary.
+            wip, res["wip_info"] = wip_snapshot(path, machine)
+            res["held_copy"] = held_copy(path, machine, it["slug"], live, wip, False, whole=is_repo)
+            res["status"] = "data-backed" if held_safe(res) else "error"
+            if res["status"] == "error":
+                res["error"] = "encrypted backup of repository without a destination failed"
+            return res
+        branches = unpushed_branches(path, live) if is_repo else []
         _, orphan, _ = git(path, "rev-list", "--count", "HEAD", "--not", "--branches", *[f"--remotes={r}" for r in live])
         orphan_head = orphan.isdigit() and int(orphan) > 0
         # 2. secrets in commits: only on request. Commits were made on purpose and go to the repo's own
@@ -779,12 +805,6 @@ def run_item(it, machine, create):
         if act in ("own-private", "new-repo"):
             url = f"https://github.com/{it['target']}.git"
             if act == "new-repo":
-                if not create:
-                    res["held_copy"] = held_copy(path, machine, it["slug"], live, wip, False, whole=is_repo)
-                    res["status"] = "data-backed" if held_safe(res) else "error"
-                    if res["status"] == "error":
-                        res["error"] = "encrypted backup of repository without a destination failed"
-                    return res
                 code, out, err = sh(["gh", "repo", "view", it["target"], "--json", "name"])
                 if code != 0:
                     code, out, err = sh(["gh", "repo", "create", it["target"], "--private",
@@ -931,21 +951,28 @@ def run_item(it, machine, create):
 def run(machine, only, jobs, create, resume=False):
     doc = json.load(open(record_path(REPO, "machines", machine, "backup-plan.json")))
     items = [i for i in doc["items"] if not only or only in i["path"]]
+    completed = {}
     if resume:
-        done = set()
+        latest = {}
         lp = record_path(REPO, "machines", machine, "backup.log")
         for line in open(lp) if os.path.exists(lp) else []:
             try:
                 r = json.loads(line)
             except Exception:
                 continue
-            if r.get("status") in ("pushed", "bundled", "data-backed", "clean", "skip", "nothing-to-push") or (r.get("status") == "held" and held_safe(r)):
-                done.add(r["path"])
-        items = [i for i in items if i["path"] not in done]
+            if isinstance(r, dict) and r.get("path"):
+                latest[r["path"]] = r
+        completed = {p: r for p, r in latest.items() if r.get("status") in
+                     ("pushed", "bundled", "data-backed", "clean", "skip", "nothing-to-push")
+                     or (r.get("status") == "held" and held_safe(r))}
+        items = [i for i in items if i["path"] not in completed]
     out_path = record_path(REPO, "machines", machine, "backup.json")
     prev = {}
     if os.path.exists(out_path):
         prev = {r["path"]: r for r in json.load(open(out_path)).get("results", [])}
+    # A stopped first run may have pushed verified generations before it wrote
+    # backup.json. Resuming must retain those append-only receipts in the summary.
+    prev.update(completed)
     if not only and not resume:  # a full run keeps only checkouts still planned (gone ones read as held/error forever)
         planned = {i["path"] for i in doc["items"]}
         prev = {p: r for p, r in prev.items() if p in planned}

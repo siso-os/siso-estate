@@ -108,6 +108,18 @@ class VaultRelease(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.source), 'config', 'core.worktree', str(self.source)], check=True)
         self.assertIn('Git worktree binding cannot safely follow the transfer', vault.git_links(str(self.source)))
 
+    def test_owned_wip_refs_do_not_make_an_idle_authored_tree_recent(self):
+        import os, time
+        old = time.time() - 48 * 3600
+        os.utime(self.source / 'authored.txt', (old, old))
+        for rel in ('.git/refs/heads/estate/wip-fixture', '.git/logs/refs/heads/estate/wip-fixture'):
+            path = self.source / rel; path.parent.mkdir(parents=True, exist_ok=True); path.write_text('preservation metadata')
+        with patch.object(vault, 'HOT_HOURS', 24):
+            self.assertFalse(vault.newest(str(self.source)))
+        (self.source / 'authored.txt').write_text('recent user work')
+        with patch.object(vault, 'HOT_HOURS', 24):
+            self.assertTrue(vault.newest(str(self.source)))
+
     def test_zero_idle_hours_does_not_use_bsd_find_negative_zero(self):
         with patch.object(vault, 'HOT_HOURS', 0), patch.object(vault, 'run', side_effect=AssertionError('no age gate')):
             self.assertIsNone(vault.newest(str(self.source)))
