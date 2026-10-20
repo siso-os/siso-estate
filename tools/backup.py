@@ -362,8 +362,13 @@ def plan(machine):
     for r in recs:
         if r["kind"] == "worktree":
             c = classify(r, bypath, gh)
+            nm = names.get(os.path.relpath(r["path"], HOME), "")
+            if nm.startswith("SKIP"):
+                c = {"action": "skip", "why": nm[5:].strip()}
+            elif nm.startswith("HOLD"):
+                c = {"action": "hold", "why": nm[5:].strip()}
             m = main_repo(r)
-            if c["action"] not in ("skip",) and m in main_cls:
+            if c["action"] not in ("skip", "hold") and m in main_cls:
                 mc = main_cls[m]
                 local = (r.get("unpushed_commits") or 0) + (r.get("dirty") or 0) + (r.get("untracked") or 0)
                 act = mc["action"] if mc["action"] not in ("clean", "skip") else (
@@ -477,6 +482,8 @@ def wip_snapshot(path, machine, exclude=()):
     code, head, _ = git(path, "rev-parse", "-q", "--verify", "HEAD^{commit}")
     head = head if code == 0 else None
     code, idx, _ = git(path, "rev-parse", "--git-path", "index")
+    if code != 0 or not idx:
+        raise RuntimeError("Git index metadata unavailable; checkout files retained")
     idx = idx if os.path.isabs(idx) else os.path.join(path, idx)
     tmpdir = tempfile.mkdtemp(prefix="estate-idx-")
     tmp = os.path.join(tmpdir, "index")

@@ -175,6 +175,25 @@ class Retention(unittest.TestCase):
             self.real_git("/fixture", "push", "origin", "main", timeout=3600)
             self.assertEqual(shell.call_args.kwargs["timeout"], 3600)
 
+    def test_worktree_disposition_is_applied_before_inheriting_its_main_repo(self):
+        records = self.root / "disposition"
+        records.mkdir()
+        row = {"path": str(self.repo), "kind": "worktree"}
+        key = os.path.relpath(str(self.repo), backup.HOME)
+        (records / "names.json").write_text(json.dumps({key: "SKIP verified synthetic fixture"}))
+        with patch.object(backup, "record_path", side_effect=lambda repo, *parts: str(records / parts[-1])), \
+                patch.object(backup, "load", return_value=({"repos": [row]}, {})), \
+                patch.object(backup, "classify", return_value={"action": "new-repo"}):
+            result = backup.plan("fixture")
+        self.assertEqual(result["items"][0]["action"], "skip")
+
+    def test_unavailable_index_is_not_treated_as_a_directory_to_copy(self):
+        with patch.object(backup, "git", return_value=(128, "", "unavailable")), \
+                patch.object(backup.shutil, "copyfile") as copy:
+            with self.assertRaisesRegex(RuntimeError, "index metadata unavailable"):
+                backup.wip_snapshot(str(self.repo), "fixture")
+        copy.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
