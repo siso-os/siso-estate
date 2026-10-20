@@ -5,7 +5,7 @@
 #     pane; prints the command instead when herdr is not here or with --print. Extra instructions are appended to the
 #     boot prompt (e.g. a handover note). ESTATE_MODEL (default opus) picks the model.
 set -eu
-HOUSE="$HOME/SISO_Workspace/_data/worktrees/siso/main/estate/core"
+HOUSE="$HOME/SISO_Workspace/_data/worktrees/siso/main/ops/estate/core"
 MODEL="${ESTATE_MODEL:-opus}"
 PRINT=0; [ "${1:-}" = "--print" ] && { PRINT=1; shift; }
 BOOT="You are the SISO Estate Manager. Load the estate-boot skill and follow it: run estate brief, read the last State in .agents/HANDOFF.md and the ADRs in docs/adr, then take the next open job in .agents/EXECUTION-QUEUE.md. Other agents are working: check herdr agent list before touching any folder. ${*:-}"

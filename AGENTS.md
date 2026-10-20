@@ -1,4 +1,4 @@
-# estate/core: the Estate Manager's house (city hall)
+# ops/estate/core: the Estate Manager's house (city hall)
 
 Canonical code: `sisodias/siso`, module `siso.estate.core`. Edit in the shared main checkout; jobs run landed `live/estate/core`. Mutable machine records, generated reports and inbox live in `~/SISO_Workspace/_data/estate/runtime`, outside Git. The standalone repository is retained history.
 

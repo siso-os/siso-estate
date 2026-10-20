@@ -20,7 +20,7 @@ it; any other local work goes to refs/heads/estate/<date>/<branch> (and .../wip,
   --commits-only  branches only: no stash or uncommitted-work snapshot (loose piles stay on disk for their own plan)
   --merge         a branch that diverged from its remote branch is merged into it when git merges it without a conflict
                   (merge-tree + commit-tree, no work tree): the remote branch gains the local commits and the checkout
-                  is simply behind; a conflict still goes to estate/<date>/<branch>
+                  is simply behind; a conflict still goes to ops/estate/<date>/<branch>
   --no-walk       each FOLDER is one repo: do not also sync the repos nested inside it
 Third-party remotes are never pushed to: local work on them is bundled into ~/SISO_Workspace/.estate/overlays/<m>/,
 which the map carries. HALO paths are refused (HALO code is never copied off Cam's repo).

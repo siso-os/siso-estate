@@ -43,7 +43,7 @@ def main():
     args = ap.parse_args()
     if args.idle_hours < 0 or args.vault_max < 0:
         ap.error('idle hours and vault maximum must be nonnegative')
-    root = Path(__file__).resolve().parents[3]
+    root = Path(__file__).resolve().parents[4]
     source = root / 'agents/harness/ci/retention.py'
     if not source.is_file():
         print('ci-retire: held; shared CI retention source unavailable')

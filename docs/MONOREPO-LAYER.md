@@ -22,7 +22,7 @@ out how it maybe gets moved into its monorepo location." Step one is done (17 Oc
 ## What goes in, what stays out (industry practice, with sources in `/tmp/monorepo-research/notes.md`)
 - In: code we write and release together. Out: other people's code (`_reference`), client-owned code, data and binaries,
   secrets. Google, Meta and Dagster's hub-and-spoke model all keep one repo for own code and pin or mirror the rest.
-- Public modules are exports from the private monorepo (`estate/os-release`, Copybara-style), never edited in the mirror.
+- Public modules are exports from the private monorepo (`ops/estate/os-release`, Copybara-style), never edited in the mirror.
 - Agents: root `AGENTS.md` holds pointers only; each package has its own; Claude Code's large-codebase guide: launch in
   the package dir, `sparsePaths` / `claudeMdExcludes`, deny generated and vendored dirs.
 - Import with history (`git subtree add` or `filter-repo --to-subdirectory-filter` + merge), never a squash copy.

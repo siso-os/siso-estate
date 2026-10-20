@@ -31,7 +31,7 @@ The archive contains source filenames. Public manifest metadata contains only st
 
 ## Block index in a code monorepo
 
-Code remains in the monorepo. Only data uses submodules. Register a block in the code repository's small `data/blocks.json` file:
+Code remains in the monorepo. Only data uses submodules. Register a block in the code repository's small `ops/data/blocks.json` file:
 
 ```json
 {
