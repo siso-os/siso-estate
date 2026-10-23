@@ -221,7 +221,7 @@ class Admission(unittest.TestCase):
         self.assertFalse(db.admit_upload(self.plane, 2_000_000_000)[0])
 
     def test_run_scoped_streaming_floor_does_not_lower_full_stage_admission(self):
-        disk = type("Disk", (), {"free": 20_000_000_000})()
+        disk = type("Disk", (), {"free": 16_000_000_000})()  # between the 15 GB streaming floor and the 15 GiB full-stage floor
         with patch.object(db.shutil, "disk_usage", return_value=disk):
             self.assertFalse(db.admit_upload(self.plane, 1000, local_peak_bytes=100_000_000)[0])
             ok, token = db.admit_upload(self.plane, 1000, local_peak_bytes=100_000_000, stream_profile=db.STREAM_PROFILE)

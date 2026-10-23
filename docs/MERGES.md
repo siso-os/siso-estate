@@ -84,7 +84,7 @@ Six of the 34 became real work and keep their repo (`SISOCRM`, `siso-inbox-chatw
   - `alex-dashboard` and `alj-dashboard` become one (**read first**).
   - `halo-buzz` and `_reference/buzz` (the one running on siso-vps) become one adopted fork.
   - `siso-agent-alj_ofm` moves from SISO hq to HALO.
-  - `halocrm` is Cam's code and is never merged.
+  - `halocrm` is HALO code and is never merged.
 - **Fahmy's agency: 12 → 5** (keeper BYK).
   - `fahmy-2026-08` becomes the partner's hq.
   - `bykonzyard-site` absorbs `bykonz-scout-review`, the client-feedback mirror and `preview-gallery`.
@@ -256,7 +256,7 @@ went. Nothing is deleted.
 1. **Fold:** `git subtree add --prefix=<folder> <satellite-url> <branch>` into the main repo, so the history comes
    along. Push, then `gh repo archive` the satellite with a README line pointing to its new home. Move the map plot.
 2. **Archive** finished work: `gh repo archive`. The plot turns dark.
-3. **Never merged:** forks with a live upstream, Cam's code, and anything across a public/private line.
+3. **Never merged:** forks with a live upstream, HALO code, and anything across a public/private line.
 4. **Order:**
    1. the mirrors, which nobody uses, so there is no risk;
    2. the dark families (Lumelle, MelanoTresses, Erdős, the old factories);

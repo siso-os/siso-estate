@@ -31,7 +31,7 @@ Skills, every `estate` command and the folder layout: `docs/COMMANDS.md`.
 
 ## Rules (the ADRs have the detail)
 - One place per repo, on GitHub, on the map (0001-0003). Nothing deleted without proof; every change leaves a line (0004).
-  No compat links (0005). Worktrees in `_data/worktrees/` (0006). HALO code never leaves Cam's repo (0007).
+  No compat links (0005). Worktrees in `_data/worktrees/` (0006). HALO code stays in HALO's repo, not in sisodias/siso (0007).
 - Secrets scanned on the scan's own exit code before anything leaves; keys in `.credentials/projects/` (0008).
 - Other agents' work is theirs: never stage, reset or stash it (0009). `machines/*/` records are generated.
 - Routine fixes are law in `plan/fix-policies.json`, applied hourly with receipts (0017); owners in `plan/owners.json`.

@@ -70,7 +70,7 @@ you can touch anything but Halo"; "their owners aren't working right now, push t
   (plain-private) / people / personal / client-<x> / runtime / credentials / archive (age, one key per family),
   pinned in `ops/data/blocks.json` (not submodules), fetched by `bin/get`; Release-asset chunks later.
 - Seats are folders, not repos (a repo per agent recreates the sprawl and splits a seat from the code it changes).
-- HALO never enters sisodias/siso; Cam's repo is never copied (ADR 0007).
+- HALO never enters sisodias/siso; HALO's repo is never copied (ADR 0007).
 
 ## 4. State (17 Oct, end of this session)
 - sisodias/siso main: db11fc04 (spine), afd36a19 (seats), eabef70a (gates). 67 modules, 19 seats, 0 errors.

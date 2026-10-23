@@ -218,7 +218,7 @@ def register():
 
 
 def reg_line(b):
-    law = {"halo": "  law: Cam's code stays in his repo", "home": "  law: private"}.get(b.get("partner") or b["island"], "")
+    law = {"halo": "  law: HALO code stays in HALO's repo", "home": "  law: private"}.get(b.get("partner") or b["island"], "")
     law = (f"  partner: {b['partner']}" + (f" (client {b['client']})" if b.get("client") else "") if b.get("partner") else "") + law
     return (f"    {b['compound']} · postcode {b['postcode']} · keeper {b['seat']} · {b['lifecycle']} · {b['provenance']}"
             + (f" · runs on {', '.join(r['site'] for r in b['runs'])}" if b.get("runs") else "") + law)
@@ -457,6 +457,8 @@ def main():
         return passthrough("fleet.py", rest)
     if c == "storage":
         return passthrough("storage.py", rest)
+    if c == "disk":
+        return passthrough("disk-keeper.py", rest)
     if c in ("run", "stop", "running"):
         return passthrough("run.py", [{"run": "start"}.get(c, c), *rest])
     if c == "refresh":

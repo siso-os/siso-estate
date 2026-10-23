@@ -135,8 +135,10 @@ class Health(unittest.TestCase):
 
 class Pick(unittest.TestCase):
     def setUp(self):
+        record = dict(RECORD, at=fleet.stamp())
         self.p = [mock.patch.object(fleet, "plan", return_value=PLAN),
-                  mock.patch.object(fleet, "load", return_value=RECORD)]
+                  mock.patch.object(fleet, "load", return_value=record),
+                  mock.patch.object(fleet, "probe_all", side_effect=AssertionError("unexpected live fleet probe"))]
         for x in self.p:
             x.start()
 

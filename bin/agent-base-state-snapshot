@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Snapshot ~/.local/state/agent-base into ./state (redacted), commit if changed, push."""
+import json, os, re, shutil, subprocess, sys, datetime
+SRC = os.path.expanduser(os.environ.get("AB_STATE_SRC", "~/.local/state/agent-base"))
+REPO = os.path.expanduser(os.environ.get("AB_STATE_REPO", "~/SISO_Workspace/_data/agent-base-state"))  # state repo stays outside the monorepo
+DST = os.path.join(REPO, "state")
+MAX_UPLOAD = 200_000          # uploads larger than this are skipped
+SKIP_DIRS = {"library-cache", "live/dist-prev",          # regenerable
+             "backend-artifacts"}                       # downloaded Codex binaries: a 229 MB one made GitHub refuse every push 6-19 Oct
+MAX_FILE = 50_000_000         # GitHub refuses files over 100 MB; a bigger file is state nobody reads from a backup
+SKIP_FILES = {"browser-history.json",                     # URLs carry session JWTs
+              "ui-suites.lock", "ship-queue/runner.pid", "ship-queue/runner-pane"}
+SECRET_KEY = re.compile(r"token|secret|password|passwd|cookie|api[_-]?key|authorization|bearer", re.I)
+HOST_KEEP = {"pid", "pane", "session"}
+# 19 Oct: a Stripe live key pasted into a prompt queue went straight into the snapshot (the push was refused for another
+# reason, so it never left); Stripe, webhook-signing and Google keys are redacted too, and nothing is pushed unscanned
+PATTERNS = re.compile(r"(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|xox[a-z]-[A-Za-z0-9-]+|eyJ[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}"
+                      r"|[sr]k_(?:live|test)_[A-Za-z0-9]{16,}|whsec_[A-Za-z0-9]{16,}|AIza[0-9A-Za-z_-]{35})")
+
+def redact(o):
+    if isinstance(o, dict):
+        return {k: ("<redacted>" if SECRET_KEY.search(k) and isinstance(v, str) else redact(v)) for k, v in o.items()}
+    if isinstance(o, list): return [redact(v) for v in o]
+    if isinstance(o, str): return PATTERNS.sub("<redacted>", o)
+    return o
+
+def keep(rel):
+    if rel in SKIP_FILES or any(rel == d or rel.startswith(d + "/") for d in SKIP_DIRS): return False
+    return True
+
+def main():
+    if os.path.isdir(DST): shutil.rmtree(DST)
+    n = 0
+    for root, _, files in os.walk(SRC):
+        for f in files:
+            p = os.path.join(root, f); rel = os.path.relpath(p, SRC)
+            if not keep(rel): continue
+            if rel.startswith("uploads/") and os.path.getsize(p) > MAX_UPLOAD: continue
+            if os.path.getsize(p) > MAX_FILE: print(f"skipped {rel}: over {MAX_FILE // 1_000_000} MB", file=sys.stderr); continue
+            out = os.path.join(DST, rel); os.makedirs(os.path.dirname(out), exist_ok=True)
+            if rel.startswith("hosts/") and f.endswith(".json"):
+                try:
+                    d = json.load(open(p)); json.dump({k: v for k, v in d.items() if k in HOST_KEEP}, open(out, "w"), indent=1)
+                except Exception: continue
+            elif f.endswith(".json"):
+                try: json.dump(redact(json.load(open(p))), open(out, "w"), indent=1)
+                except Exception: shutil.copy2(p, out)
+            elif f.endswith((".jsonl", ".log", ".txt")) or ".bak" in f or f == "alarmed":
+                txt = open(p, errors="replace").read()
+                open(out, "w").write(PATTERNS.sub("<redacted>", txt))
+            else:
+                shutil.copy2(p, out)
+            n += 1
+    git = lambda *a: subprocess.run(["git", "-C", REPO, *a], capture_output=True, text=True)
+    git("add", "-A")
+    if not git("status", "--porcelain").stdout.strip():
+        print(f"{n} files, no change"); return 0
+    ts = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    r = git("commit", "-q", "-m", f"snapshot {ts} ({n} files)")
+    if r.returncode: print(r.stderr, file=sys.stderr); return 1
+    gl = shutil.which("gitleaks") or "/opt/homebrew/bin/gitleaks"   # launchd's PATH has no Homebrew
+    scan = subprocess.run([gl, "git", REPO, "--log-opts=origin/main..HEAD", "-c", os.path.join(REPO, ".gitleaks.toml"),
+                           "--no-banner", "-l", "error", "--redact"], capture_output=True, text=True)
+    if scan.returncode:
+        print(f"secret scan held the push (gitleaks exit {scan.returncode}); committed here only: "
+              f"{gl} git {REPO} --log-opts=origin/main..HEAD -c .gitleaks.toml --redact", file=sys.stderr); return 1
+    r = git("push", "-q", "origin", "HEAD")
+    if r.returncode: print(r.stderr, file=sys.stderr); return 1
+    print(f"{n} files, pushed"); return 0
+sys.exit(main())

@@ -24,7 +24,7 @@ This builds on ADR 0021/0022 in sisodias/siso (roots kept); it adds what they la
 |---|---|---|
 | `sisodias/siso` | ALL SISO-own code, seats, rules, knowledge text, data manifests | one access boundary |
 | `sisodias/siso-data-<family>-<set>-NN` | data blocks, ~1 GB each (5 GB hard), files <= 64 MiB | size; encryption per family |
-| `HALO-AGENCY/halo` | HALO's monorepo (Cam's code never copied) | client boundary, ADR 0007 |
+| `HALO-AGENCY/halo` | HALO's monorepo (HALO code never copied) | client boundary, ADR 0007 |
 | client- / partner-owned repos (Fahmy, kikas, ...) | their code | they own it |
 | real forks (`siso-code` T3, listmonk, chat-widget, ...) | upstream + our commits | upstream history; a `kind: fork` pointer module in siso |
 | `sisodias/siso-city` | the machine map (`~/SISO_Workspace`), lock of every repo above | where things sit on each box |
@@ -133,7 +133,7 @@ ops/seats/estate/
 |---|---|---|
 | agents/zero | siso-agent-zero, siso-firstmate code (last, it is live) | siso-agent-zero-protocol (same thing) |
 | agents/harness | siso-harness-lab + agent-hooks, agent-stack, agent-brain, agent-runtime | blackbox4, memories_v2, agent-base-sources |
-| agents/work, team, adapters | project-os, project-team, agent-integrations | project-team-2, social-outreach x2 |
+| agents/zero/work, team, adapters | project-os, project-team, agent-integrations | project-team-2, social-outreach x2 |
 | agents/skills/{hub,playbook} | skills-hub, agent-playbook, jev-agent-skills | |
 | ops/estate/* | siso-estate, laptop-health, os-release, guest-gateway | codex-remote (after a security read) |
 | packages/ui + apps/ui + library/banks/ui | siso-ui-hub, siso-ui-base, component-bank index, design-system | siso-ui-library, ui-shoot, ui-comps, actionist-components |

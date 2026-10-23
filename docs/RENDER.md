@@ -157,7 +157,7 @@ The reasoning for each placement:
 - **The mainland is at the centre** because the agency is the whole business. Everything else serves it or is
   served by it.
 - **Partners sit on the mainland's coast inside walls.** They are part of SISO Agency (Shaan, 25 Sep), and each keeps
-  its own law behind its gate (HALO's code never leaves Cam's repo, ADR 0007). HALO is the largest city, and a gold
+  its own law behind its gate (HALO code stays in HALO's repo, ADR 0007). HALO is the largest city, and a gold
   road runs from it to hq because HALO funds SISO.
 - **The Library sits beside the factory** because the heaviest code flow runs Library banks → factory → products.
   Its lighthouse faces outwards because much of it is public.

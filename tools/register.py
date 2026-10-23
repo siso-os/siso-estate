@@ -6,6 +6,7 @@ than somehow code changing it").
   register.py            write machines/register.json and print a summary with the doctor's findings
   register.py --check    write nothing; exit 1 when an invariant the register can test fails (I1, I9)
   register.py --json     print the register instead of the summary
+  register.py --quick    reuse hourly activity counts; no Git subprocesses (watch hot path)
 
 Every plot on the umbrella map (~/SISO_Workspace/.estate/map.json) becomes a building, placed on its island, district and
 compound by the rules in plan/model.json. It is given a postcode (its GitHub name), a provenance
@@ -33,7 +34,8 @@ WORK_ONLY = ["--invert-grep", "--grep=^estate", "--grep=Stop tracking tool runti
 
 
 def load(rel, default=None):
-    p = rel if rel.startswith("/") else os.path.join(REPO, rel)
+    p = (record_path(REPO, *rel.split("/")) if rel.startswith("machines/") else
+         rel if rel.startswith("/") else os.path.join(REPO, rel))
     try:
         return json.load(open(p))
     except (OSError, ValueError):
@@ -139,8 +141,17 @@ def seat_of(path, owners):
     return best
 
 
+def activity(path, *, quick=False, previous=None):
+    if quick:
+        return (previous or {}).get("commits_14d")
+    c = git(os.path.join(WS, path), "rev-list", "--count", "--since=14.days", *WORK_ONLY, "HEAD")
+    return int(c) if c.isdigit() else None
+
+
 def main():
     t0 = time.time()
+    quick = "--quick" in sys.argv
+    previous = {b["path"]: b for b in (load(OUT, {}) or {}).get("buildings", [])} if quick else {}
     mp = load(os.path.join(WS, ".estate", "map.json"))
     plots = dict(mp["repos"])
     plots.setdefault(".", {"url": "https://github.com/sisodias/siso-city.git", "on": ["laptop"]})
@@ -203,8 +214,7 @@ def main():
             life = "dark" if not on else "unscored"
         act = None
         if built and path != ".":
-            c = git(os.path.join(WS, path), "rev-list", "--count", "--since=14.days", *WORK_ONLY, "HEAD")  # work, not the estate's tidying
-            act = int(c) if c.isdigit() else None
+            act = activity(path, quick=quick, previous=previous.get(path))
         po = legend.partner_of(path)
         b = {"postcode": pc, "path": path, "island": iid, "district": district, "compound": cid,
              "partner": po[0] if po else None, "client_of": (po[0] if po and po[1] else None), "client": po[1] if po else None,

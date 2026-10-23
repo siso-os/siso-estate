@@ -13,6 +13,70 @@ watch = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(watch)
 
 class WatchBudgetTests(unittest.TestCase):
+    def test_quick_register_preserves_activity_without_spawning_git(self):
+        import importlib
+        register = importlib.import_module("register")
+        with patch.object(register, "git", side_effect=AssertionError("hot-path Git spawn")):
+            self.assertEqual(register.activity("repo", quick=True, previous={"commits_14d": 42}), 42)
+            self.assertIsNone(register.activity("new-repo", quick=True))
+        with patch.object(register, "git", return_value="7") as git:
+            self.assertEqual(register.activity("repo"), 7)
+            git.assert_called_once()
+
+    def test_register_reads_mutable_machine_records_from_runtime(self):
+        import importlib
+        register = importlib.import_module("register")
+        with tempfile.TemporaryDirectory() as td:
+            p = pathlib.Path(td) / "repos.json"
+            p.write_text('{"repos": [{"head": "fresh"}]}')
+            with patch.object(register, "record_path", return_value=str(p)) as record:
+                self.assertEqual(register.load("machines/laptop/repos.json")["repos"][0]["head"], "fresh")
+                record.assert_called_once_with(register.REPO, "machines", "laptop", "repos.json")
+
+    def test_apply_uses_quick_register_and_only_two_git_processes(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / ".git").mkdir()
+            with patch.object(watch, "LOG", str(root / "watch.jsonl")), \
+                 patch.object(watch, "load_repos", return_value={"repos": []}), \
+                 patch.object(watch, "save_repos"), \
+                 patch.object(watch, "last_described", {}), \
+                 patch.object(inventory, "git", side_effect=["main", "abc"]) as git, \
+                 patch.object(watch.subprocess, "run") as run:
+                watch.apply({td: "new"}, {td: 1.0})
+                self.assertEqual(git.call_count, 2)
+                run.assert_called_once()
+                self.assertEqual(run.call_args.args[0][-1], "--quick")
+                self.assertTrue(run.call_args.kwargs["check"])
+
+    def test_worker_describes_each_repo_at_most_once_per_sixty_seconds(self):
+        path = "/fixture/repo"
+        now = [100.0]
+        calls = []
+        ticks = iter([100.0, 159.0, 160.0])
+
+        def next_tick():
+            now[0] = next(ticks)
+
+        def apply(found, batch):
+            calls.append((now[0], found))
+            watch.last_described[path] = now[0]
+            watch.pending[path] = 1.0  # another change arrives immediately
+            return []
+
+        with patch.object(watch, "pending", {path: 1.0}), \
+             patch.object(watch, "last_described", {}), \
+             patch.object(watch.wake, "wait", side_effect=next_tick), \
+             patch.object(watch.time, "sleep"), \
+             patch.object(watch.time, "time", return_value=1000.0), \
+             patch.object(watch.time, "monotonic", side_effect=lambda: now[0]), \
+             patch.object(watch, "load_repos", return_value={"repos": [{"path": path}]}), \
+             patch.object(watch.os.path, "exists", return_value=True), \
+             patch.object(watch, "apply", side_effect=apply):
+            with self.assertRaises(StopIteration):
+                watch.worker()
+        self.assertEqual(calls, [(100.0, {path: "git"}), (160.0, {path: "git"})])
+
     def test_quick_describe_preserves_counts_and_never_walks_git(self):
         with tempfile.TemporaryDirectory() as td:
             (pathlib.Path(td)/".git").mkdir()

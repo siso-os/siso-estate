@@ -1,0 +1,11 @@
+{
+  "id": "siso.imports.vps.caddy",
+  "kind": "tool",
+  "owner": "estate",
+  "summary": "SISO service routing configuration; import does not deploy or restart services.",
+  "tags": [
+    "layer:estate"
+  ],
+  "depends": [],
+  "status": "experimental"
+}

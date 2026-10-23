@@ -11,7 +11,7 @@ A thing's place is the part of the business its work serves. It is not decided b
 
 - **Whose code it is.** SISO's job is working with code, so all of it is SISO's work. Where the code came from (Cam's
   GitHub, an open-source upstream, a client's repo) is recorded on the building as its origin. Its rules travel with
-  it: Cam's code stays in his repo, and an upstream keeps its `upstream` remote. The origin never picks the place.
+  it: HALO code stays in HALO's repo, and an upstream keeps its `upstream` remote. The origin never picks the place.
 - **What type of thing it is** (app, client, script). Type describes a building. It is not a place.
 - **Which machine it runs on.** A machine is a site the map points to. It is not a place either.
 
@@ -277,7 +277,7 @@ The machines:
 `SISO_Agency/partners/halo` on 25 Sep 21:12, when Shaan said nothing in HALO was working and no process had its folder
 there: one `estate move` (5 worktrees repaired, 15 Claude history links), College Besties to `clients/`, the launchd job
 reloaded from its source (`estate services`), 65 consumers repointed, 7 links retargeted, the estate's code and plans
-updated; the backup still never copies Cam's code at the new path. The text below is the plan as it stood before.
+updated; the backup still never copies Cam's code at the new path. The text below is the plan as it stood before. (superseded 23 Oct 2026, Shaan: the CRM is HALO code in HALO-AGENCY/halo)
 
 **Both partner blocks are live (measured 25 Sep ~17:45).**
 - Fahmy's block:

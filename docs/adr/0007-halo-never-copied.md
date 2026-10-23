@@ -19,8 +19,8 @@ Until then `halo_live`, the CRM, had no scheduled backup and nothing left the bo
 **Decision:**
 - HALO's databases may be backed up **encrypted** into private sisodias data repos: all six (halo_live,
   halo_oracle_convex, twenty, halo_affine, plane, buzz) plus Oracle's Convex zips, nightly, into
-  `sisodias/siso-data-halo-databases` (7 daily and 4 weekly copies). This is client data, not Cam's code, and it goes only
-  into an age-encrypted plane (ADR 0014). **Cam's code still never leaves camronkellman/halocrm.**
+  `sisodias/siso-data-halo-databases` (7 daily and 4 weekly copies). This is client data, not Cam's code, and it goes only (superseded 23 Oct 2026, Shaan: the CRM is HALO code in HALO-AGENCY/halo)
+  into an age-encrypted plane (ADR 0014). **Cam's code still never leaves camronkellman/halocrm.** (superseded 23 Oct 2026, Shaan: the CRM is HALO code in HALO-AGENCY/halo)
 - The pipe runs from the client box, which only drops files. halo-vps dumps into a root-only outbox
   (`halo-estate-dump`), and `oracle-offbox-backup` copies it to siso-vps as user `halo-backup`. That key is
   `restrict` + `rrsync -wo -no-del -munge`, and its `.ssh` is root-owned, so it can only add files to one folder.

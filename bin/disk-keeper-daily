@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+# Rotate only our own output; native agent sessions and projects are never changed.
+keeper_state="$HOME/.local/state/estate/disk-keeper"
+mkdir -p "$keeper_state"
+if [ -f "$keeper_state/daily.log" ] && [ "$(stat -f %z "$keeper_state/daily.log")" -gt 10485760 ]; then
+  mkdir -p "$HOME/SISO_Workspace/_archive/disk-keeper-logs"
+  gzip -c "$keeper_state/daily.log" > "$HOME/SISO_Workspace/_archive/disk-keeper-logs/$(date +%Y%m%dT%H%M%S).log.gz"
+  : > "$keeper_state/daily.log"
+fi
+keeper_core=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec python3 -B "$keeper_core/tools/disk-keeper.py" --run --machine "$1" --json

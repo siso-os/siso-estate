@@ -13,6 +13,19 @@ spec = importlib.util.spec_from_file_location('archive_recovery', SOURCE)
 archive = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(archive)
 
+def gh_remote(digest):
+    """Fake gh and vault probe: the remote holds the one listed part; the vault does not answer."""
+    def run(args, **kw):
+        text = ' '.join(args)
+        if 'contents/SHA256SUMS' in text:
+            return subprocess.CompletedProcess(args, 0, digest + '  part-00000\n', '')
+        if 'SISO-STORAGE-VAULT' in text:
+            return subprocess.CompletedProcess(args, 1, '', '')  # vault unresponsive: the mirror is skipped
+        if 'git/trees' in text:
+            return subprocess.CompletedProcess(args, 0, 'part-00000\nSHA256SUMS\n', '')
+        return subprocess.CompletedProcess(args, 0, archive.RECIPIENT, '')
+    return run
+
 class Recovery(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -53,7 +66,7 @@ class Recovery(unittest.TestCase):
             if change_source:
                 (self.source / 'authored.txt').write_text('a newer edit\n')
             return seen
-        with patch.object(archive, 'sh', side_effect=sh), patch.object(archive, 'push') as push, patch.object(archive, 'read_back', side_effect=read_back), patch.object(archive.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, archive.RECIPIENT, '')), patch('sys.stdout', new_callable=io.StringIO):
+        with patch.object(archive, 'sh', side_effect=sh), patch.object(archive, 'remote_complete', return_value=True), patch.object(archive, 'vault_ok', return_value=False), patch.object(archive, 'push') as push, patch.object(archive, 'read_back', side_effect=read_back), patch.object(archive.subprocess, 'run', side_effect=gh_remote(digest)), patch('sys.stdout', new_callable=io.StringIO):
             archive.run('fixture', True)
             push.assert_not_called()
 
@@ -62,6 +75,7 @@ class Recovery(unittest.TestCase):
         self.assertFalse(self.source.exists())
         self.assertTrue((self.root / 'archive/fixture.OFFLOADED.md').exists())
         self.assertTrue((self.root / 'runtime/receipt.jsonl').exists())
+        self.assertIn('vault mirror skipped: vault unresponsive', (self.root / 'runtime/receipt.jsonl').read_text())
 
     def test_newer_source_keeps_its_only_copy(self):
         with self.assertRaisesRegex(SystemExit, 'source changed'):
@@ -78,10 +92,18 @@ class Recovery(unittest.TestCase):
                 (p / 'SHA256SUMS').write_text(digest + '  part-00000\n'); return ''
             if args[:2] == ('git', 'rev-parse'): return 'fixture-head'
             raise AssertionError(args)
-        with patch.object(archive, 'sh', side_effect=sh), patch.object(archive.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, archive.RECIPIENT, '')), patch.object(archive, 'read_back', side_effect=[{}, seen]), patch.object(archive, 'build', return_value=(seen, [('part-00000', digest, 6)])), patch.object(archive, 'push') as pushed, patch('sys.stdout', new_callable=io.StringIO):
+        with patch.object(archive, 'sh', side_effect=sh), patch.object(archive, 'remote_complete', return_value=True), patch.object(archive, 'vault_ok', return_value=False), patch.object(archive.subprocess, 'run', side_effect=gh_remote(digest)), patch.object(archive, 'read_back', side_effect=[{}, seen]), patch.object(archive, 'build', return_value=(seen, [('part-00000', digest, 6)])), patch.object(archive, 'push') as pushed, patch('sys.stdout', new_callable=io.StringIO):
             archive.run('fixture', True)
         pushed.assert_called_once()
         self.assertFalse(self.source.exists())
+
+    def test_partial_remote_is_not_reused(self):
+        def gh(args, **kw):
+            if 'SHA256SUMS' in args[2]:
+                return subprocess.CompletedProcess(args, 0, 'aaa  part-00000\nbbb  part-00001\n', '')
+            return subprocess.CompletedProcess(args, 0, 'part-00000\n', '')
+        with patch.object(archive.subprocess, 'run', side_effect=gh):
+            self.assertFalse(archive.remote_complete('org/repo'))
 
     def test_archive_parts_are_under_95_megabytes(self):
         self.assertLess(archive.PART, 95_000_000)

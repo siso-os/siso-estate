@@ -292,12 +292,34 @@ def check_floor(floor_gib, run):
     return state
 
 
+def check_used(warn_gb=120, run=False):
+    """Warn on actual system-volume usage; this never changes admission."""
+    out = sh("df", "-k", "/System/Volumes/Data" if sys.platform == "darwin" else "/")
+    if not out:
+        print("storage-used: unavailable (df failed)")
+        return None
+    used = int(out.splitlines()[1].split()[2]) * 1024
+    state = {"machine": MACHINE, "used_bytes": used, "warn_bytes": int(warn_gb * 10**9),
+             "warning": used >= warn_gb * 10**9, "at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+    if run:
+        directory = os.path.join(HOME, ".local", "state", "estate")
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, "storage-used.json")
+        with open(path + ".tmp", "w") as f:
+            json.dump(state, f, indent=2)
+        os.replace(path + ".tmp", path)
+    print("storage-used: " + ("WARNING " if state["warning"] else "") + json.dumps(state, sort_keys=True))
+    return state
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--run", action="store_true", help="clear what the rules allow and write receipts")
     ap.add_argument("--quiet", action="store_true", help="print only the totals")
-    ap.add_argument("--floor-gib", type=float, default=60 if MACHINE == "mini" else 0,
+    ap.add_argument("--floor-gib", type=float, default=100 if MACHINE == "mini" else 0,
                     help="cleaning target: shed rebuildable folders harder below this; never pauses work")
+    ap.add_argument("--warn-used-gb", type=float, default=120 if MACHINE == "mini" else 0,
+                    help="warn at this many decimal GB used; never pauses work (Mini default 120)")
     ap.add_argument("--hold-gib", type=float, default=HOLD_GIB,
                     help="pause new heavy admissions only below this (default %d GiB)" % HOLD_GIB)
     ap.add_argument("--floor-only", action="store_true", help="only record the floor and update admission; no cleanup")
@@ -305,8 +327,10 @@ def main():
     a = ap.parse_args()
     if a.cleanup_interval < 0:
         ap.error("--cleanup-interval must be nonnegative")
-    if a.floor_gib < 0 or a.hold_gib < 0:
+    if a.floor_gib < 0 or a.hold_gib < 0 or a.warn_used_gb < 0:
         ap.error("--floor-gib and --hold-gib must be nonnegative")
+    if a.warn_used_gb:
+        check_used(a.warn_used_gb, a.run)
     if a.hold_gib:
         check_floor(a.hold_gib, a.run)
     if a.floor_only:

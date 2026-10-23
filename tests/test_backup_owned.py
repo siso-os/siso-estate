@@ -30,7 +30,8 @@ class Owned(unittest.TestCase):
         c = classify(rec("SISO_Agency/partners/halo/oracle/core", "HALO-AGENCY", "halo-streaming"))
         self.assertEqual((c["action"], c["target"], c["visibility"]), ("own-private", "HALO-AGENCY/halo-streaming", "private"))
         self.assertEqual(c["live_remotes"], ["origin"])
-        c = classify(rec("SISO_Agency/partners/halo/oracle/core", "HALO-AGENCY", "halo-streaming", dirty=0))
+        # classify() counts an absent unpushed/untracked field as unknown work, so state both as zero.
+        c = classify(dict(rec("SISO_Agency/partners/halo/oracle/core", "HALO-AGENCY", "halo-streaming", dirty=0), unpushed_commits=0, untracked=0))
         self.assertEqual(c["action"], "clean")
 
     def test_sisodias_unchanged(self):

@@ -16,7 +16,7 @@ order held by owners and by rules the system applies is law.
   the estate's tidying commits do not count).
 - **Law.** `plan/fix-policies.json` lists the routine fixes the Estate Manager makes in any lane's repo without asking:
   tool state untracked, stale worktree records pruned, a missing front door written (or CLAUDE.md renamed to AGENTS.md),
-  a missing CLAUDE.md shim added. It also lists what it never touches: Cam's code (0007), Oracle ("oracle owns itself"),
+  a missing CLAUDE.md shim added. It also lists what it never touches: Cam's code (0007), Oracle ("oracle owns itself"), (superseded 23 Oct 2026, Shaan: the CRM is HALO code in HALO-AGENCY/halo)
   others' and clients' repos, a repo with anything staged, a repo an agent is working in, a dormant building, and a repo
   that ignores or does not track its instruction files. `tools/fix.py` (`estate fix --run`) applies them nightly: one
   path-limited commit per fix, the index checked before it, secret-scanned, pushed only as the branch's one unpushed

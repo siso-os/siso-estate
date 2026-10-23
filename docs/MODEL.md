@@ -19,7 +19,7 @@ The SISO estate is a **territory: all its land and all its water**. Land is wher
   vault (`_archive`), customs (`_inbox`), the foreign quarter (`_reference`).
 - On an island: **districts** (only where an island holds compounds of different purposes), **compounds** (a project:
   one name, one keeper, one gate, one or more buildings), **buildings** (git repos), each on a **plot** (its path).
-- Each island and compound carries a **law**. HALO's code stays in Cam's repo, a client's data stays inside its
+- Each island and compound carries a **law**. HALO's code stays in HALO's repo, a client's data stays inside its
   compound, and foreign code is never edited or run.
 - **Sites** are machines. Each SISO site keeps the whole plan and builds only the plots it needs; GitHub holds every
   deed and blueprint, so any site can build any plot in about a minute. Client machines only ever hold their own
@@ -140,7 +140,7 @@ compounds differ in purpose.
 - A gate repo holding its buildings: Oracle is sisodias/oracle-streaming holding core, operator-app, agent-zero,
   uihub and archive. Fahmy's account repo holds 6.
 - A folder with a door but no repo: siso-internal-labs holds 3.
-- A loose folder: HALO_Agency/crm holds Cam's repo plus piles.
+- A loose folder: HALO_Agency/crm holds HALO's repo plus piles.
 
 The rule for all of them is the 5 Sep link rule: every building has exactly one compound, and the building's card
 and the gatehouse's `project.json` must agree. A gatehouse stays small; in Oracle's own words, "Keep this repository
