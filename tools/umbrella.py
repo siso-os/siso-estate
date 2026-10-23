@@ -251,7 +251,7 @@ def mapped_paths():
 # The map carries git bundles (.estate/overlays): already compressed, so delta search on them is wasted CPU. Agent Zero,
 # 19 Oct: the hourly push ran pack-objects for ~9 min at a load of 25. Files over 1 MB are packed whole.
 CHEAP_PACK = ("-c", "core.bigFileThreshold=1m", "-c", "pack.threads=2")
-# HALO code never leaves Cam's repo (ADR 0007): a bundle of a HALO, Oracle or Kellman checkout is never on the map.
+# HALO code stays in HALO's repo (ADR 0007): a bundle of a HALO, Oracle or Kellman checkout is never on the map.
 # 19 Oct: 1.9 GB of them made the hourly push time out (HTTP 408).
 HALO_OVERLAY = re.compile(r"halo|oracle|kellman", re.I)
 

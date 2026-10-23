@@ -175,7 +175,7 @@ def apply(found, batch):
         lines.append({"kind": kind, "path": path})
     doc["repos"] = sorted((r for r in doc["repos"] if r), key=lambda r: r["path"])
     save_repos(doc)
-    subprocess.run([sys.executable, os.path.join(HERE, "register.py")], capture_output=True, timeout=120)
+    subprocess.run([sys.executable, os.path.join(HERE, "register.py"), "--quick"], capture_output=True, timeout=120, check=True)
     now = time.time()
     rotate_log()
     with open(LOG, "a") as f:

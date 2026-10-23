@@ -23,7 +23,7 @@ it; any other local work goes to refs/heads/estate/<date>/<branch> (and .../wip,
                   is simply behind; a conflict still goes to ops/estate/<date>/<branch>
   --no-walk       each FOLDER is one repo: do not also sync the repos nested inside it
 Third-party remotes are never pushed to: local work on them is bundled into ~/SISO_Workspace/.estate/overlays/<m>/,
-which the map carries. HALO paths are refused (HALO code is never copied off Cam's repo).
+which the map carries. HALO paths are refused (HALO code stays in HALO's repo).
 """
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time
 
@@ -407,7 +407,7 @@ def resume(folder):
 def house(folder, name, why, park=False):
     folder = os.path.abspath(folder)
     if HALO.search(folder + "/") and not os.environ.get("ESTATE_HALO_OK"):  # Shaan 17 Oct: SISO is HALO's main dev; private sisodias repos, moved to the HALO org at the monorepo step
-        raise SystemExit("refused: HALO path (HALO code is never copied off Cam's repo)")
+        raise SystemExit("refused: HALO path (HALO code stays in HALO's repo)")
     if os.path.exists(os.path.join(folder, ".git")):
         _, n, _ = git(folder, "rev-list", "--count", "--all")
         _, rem, _ = git(folder, "remote")

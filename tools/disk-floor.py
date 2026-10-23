@@ -37,6 +37,7 @@ OWNER_CARD = os.path.join(HOME, ".local", "state", "a0", "owners", "ESTATE.json"
 FS = "/System/Volumes/Data"
 FLOOR_GIB = 60 if MACHINE == "mini" else 100
 EVERY_MAX, EVERY_MIN, DROP = 6 * 3600, 1800, 2 * 2**30  # size when free fell DROP, never twice in EVERY_MIN
+SIZE_BUDGET, SIZE_PATH_TIMEOUT = 30, 5  # optional diagnostics must fit the five-minute watcher interval
 DEV = os.path.join(STATE, "disk-floor-dev.json")  # pid -> when it was last seen with a client (or first seen without)
 DEV_IDLE = 3600
 DEV_RE = re.compile(r"\bvite\b|next dev|next-server|next start|webpack|astro dev|storybook|nuxt|remix dev|"
@@ -84,8 +85,13 @@ def paths():
 
 def size_all():
     sizes = {}
+    deadline = time.monotonic() + SIZE_BUDGET
     for p in paths():
-        r = subprocess.run(["taskpolicy", "-b", "nice", "-n", "19", "du", "-sk", "-x", p], capture_output=True, text=True, timeout=600)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired('optional disk sizing', SIZE_BUDGET)
+        r = subprocess.run(["taskpolicy", "-b", "nice", "-n", "19", "du", "-sk", "-x", p], capture_output=True, text=True,
+                           timeout=min(SIZE_PATH_TIMEOUT, remaining))
         try:
             sizes[p] = int(r.stdout.split()[0]) * 1024
         except (IndexError, ValueError):
@@ -227,12 +233,19 @@ def main():
     sz = load(SIZES, {"runs": []})
     runs = sz["runs"]
     age = now - runs[-1]["t"] if runs else None
+    sizing_status = 'cached'
     if age is None or age >= EVERY_MAX or (age >= EVERY_MIN and runs[-1].get("free", free) - free >= DROP):
-        runs.append({"t": now, "free": free, "sizes": size_all()})
-        sz["runs"] = runs[-2:]
-        with open(SIZES + ".tmp", "w") as f:
-            json.dump(sz, f)
-        os.replace(SIZES + ".tmp", SIZES)
+        try:
+            sizes = size_all()
+        except subprocess.TimeoutExpired:
+            sizing_status = 'unavailable_timeout'
+        else:
+            sizing_status = 'sampled'
+            runs.append({"t": now, "free": free, "sizes": sizes})
+            sz["runs"] = runs[-2:]
+            with open(SIZES + ".tmp", "w") as f:
+                json.dump(sz, f)
+            os.replace(SIZES + ".tmp", SIZES)
     growers, since = [], None
     if len(sz["runs"]) == 2:
         a, b = sz["runs"]
@@ -240,10 +253,11 @@ def main():
         d = [(b["sizes"][p] - a["sizes"].get(p, 0), p) for p in b["sizes"]]
         growers = [{"path": p, "grew_gib": gib(x), "now_gib": gib(b["sizes"][p]), "new": p not in a["sizes"]}
                    for x, p in sorted(d, reverse=True)[:5] if x >= 200 * 2**20]
-    st = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "machine": "laptop", "free_gib": gib(free), "floor_gib": FLOOR_GIB,
+    st = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "machine": MACHINE, "free_gib": gib(free), "floor_gib": FLOOR_GIB,
           "ok": not low, "swap_gib": round(swap_gib() or 0, 1), "growers_since": since, "growers": growers,
-          "line": ("OK laptop %.1f GB free" % gib(free)) if not low else
-                  ("LOW laptop %.1f GB free (floor %d); grew since %s: %s" % (gib(free), FLOOR_GIB, since or "-", ", ".join(
+          "sizing_status": sizing_status, "sizes_observed_at": runs[-1]['t'] if runs else None,
+          "line": ("OK %s %.1f GiB free" % (MACHINE, gib(free))) if not low else
+                  ("LOW %s %.1f GiB free (floor %d); grew since %s: %s" % (MACHINE, gib(free), FLOOR_GIB, since or "-", ", ".join(
                       "%s +%.1f" % (g["path"].replace(HOME, "~"), g["grew_gib"]) for g in growers[:3]) or "not sized yet"))}
     dev = idle_dev_servers(now)
     st["idle_dev_servers"] = dev

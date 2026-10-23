@@ -25,7 +25,8 @@ OURS = ("sisodias/", "Lordsisodia/", "lordsisodia/")
 CLIENTS = ("camronkellman/",)
 
 SCAN = r'''
-G="git -c safe.directory=*"
+# A census must not refresh indexes or disturb directory metadata used by preservation checks.
+G="git --no-optional-locks -c safe.directory=*"
 echo "## host"; hostname; nproc; df -Pk / | tail -1 | awk '{print $2, $3}'
 echo "## git"
 find / -xdev \( -path /proc -o -path /sys -o -name node_modules -o -name .cache -o -name bundle \) -prune -o -name .git -print 2>/dev/null |

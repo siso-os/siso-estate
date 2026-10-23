@@ -112,8 +112,42 @@ def ignored_keep(p):
     return [q for i, q in enumerate(paths) if not any(d.endswith("/") and q.startswith(d) for d in paths[:i])]
 
 
+def landed_builder_lane(path):
+    """An explicit builder may retire only its clean linked lane, freshly on its trunk."""
+    path = os.path.abspath(path)
+    relative = os.path.relpath(path, WT)
+    parts = relative.split(os.sep)
+    if len(parts) != 2 or parts[0] == ".." or os.path.realpath(path) != path:
+        raise ValueError("outside the worktree lane boundary")
+    repo, lane = parts
+    trunk = "halo/v2" if repo.lower() == "halo" else "main"
+    if lane in KEEP_NAMES or NEVER_PRIVATE.search(repo + "/" + lane):
+        raise ValueError("standing or private lane")
+    if not os.path.isfile(os.path.join(path, ".git")):
+        raise ValueError("not a linked worktree")
+    status = git(path, "status", "--porcelain", "--untracked-files=normal")
+    if status.returncode or status.stdout.strip():
+        raise ValueError("unfinished authored work")
+    # A cached tracking ref is not proof that this builder landed.
+    try:
+        advertised = subprocess.run(["git", "-C", path, "ls-remote", "origin", "refs/heads/" + trunk],
+                                    capture_output=True, text=True, timeout=30)
+        fields = advertised.stdout.split()
+        if advertised.returncode or len(fields) != 2 or not re.fullmatch(r"[0-9a-f]{40}", fields[0]):
+            raise ValueError("cannot freshly verify origin/" + trunk + "")
+        main_sha = fields[0]
+        fetched = subprocess.run(["git", "-C", path, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin", main_sha],
+                                 capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        raise ValueError("cannot freshly verify origin/" + trunk + "")
+    if fetched.returncode or git(path, "merge-base", "--is-ancestor", "HEAD", main_sha).returncode:
+        raise ValueError("HEAD is not freshly verified in origin/" + trunk + "")
+    return repo, lane
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--landed-builder", metavar="PATH", help="retire only this completed builder lane after fresh main verification")
     ap.add_argument("--days", type=int, default=3)
     ap.add_argument("--idle-hours", type=float, help="instead of --days: nobody committed, checked out or made it here for H hours")
     ap.add_argument("--run", action="store_true")
@@ -122,6 +156,15 @@ def main():
     ap.add_argument("--pin-local", action="store_true", help="clean, idle worktrees with local-only commits too: pin HEAD at refs/estate-kept/ first")
     ap.add_argument("--only", nargs="+", metavar="REPO/LANE", help="just these worktrees, named by their owner")
     a = ap.parse_args()
+    if a.landed_builder:
+        if a.only or a.preserve_wip or a.pin_local:
+            ap.error("--landed-builder cannot preserve or select other work")
+        try:
+            repo, lane = landed_builder_lane(a.landed_builder)
+        except ValueError as exc:
+            print("builder-retire: kept: " + str(exc))
+            return 0
+        a.only, a.halo = [repo + "/" + lane], True
     if a.pin_local:
         ap.error("--pin-local no longer permits retirement: use --preserve-wip for a verified remote copy")
     busy = held()

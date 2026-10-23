@@ -10,6 +10,24 @@ guard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(guard)
 
 class MiniFloor(unittest.TestCase):
+    def test_used_warning_threshold_and_no_admission_side_effect(self):
+        for kib, expected in ((117187499, False), (117187500, True)):
+            df = 'Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/test 239362496 %s 999999 90%% /\n' % kib
+            with patch.object(guard, 'sh', return_value=df), patch.object(guard.subprocess, 'run') as run:
+                state = guard.check_used(120, False)
+                self.assertEqual(state['warning'], expected)
+                self.assertEqual(state['warn_bytes'], 120_000_000_000)
+                run.assert_not_called()
+
+    def test_used_warning_records_current_status_and_recovers(self):
+        with tempfile.TemporaryDirectory() as home, patch.object(guard, 'HOME', home):
+            for kib, expected in ((190000000, True), (100000000, False)):
+                df = 'Filesystem blocks Used Available Capacity Mounted\n/dev/test 239362496 %s 999999 90%% /\n' % kib
+                with patch.object(guard, 'sh', return_value=df):
+                    guard.check_used(120, True)
+                state = json.loads((Path(home) / '.local/state/estate/storage-used.json').read_text())
+                self.assertEqual(state['warning'], expected)
+
     def test_low_holds_new_admission_and_records_status(self):
         with tempfile.TemporaryDirectory() as home, patch.object(guard, 'HOME', home), patch.object(guard, 'free_kib', return_value=1024), patch.object(guard.subprocess, 'run') as run:
             run.return_value.returncode = 0

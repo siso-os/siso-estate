@@ -30,7 +30,7 @@ DEFAULT_WS = os.path.join(HOME, "SISO_Workspace")
 
 ISLANDS = {"SISO_Agency": "agency", "SISO_Agents": "engine", "Great_Library_of_SISO": "library",
            "HALO_Agency": "halo", "personal": "home"}
-LAWS = {"halo": "Cam's code stays in camronkellman/halocrm; never copy it off", "home": "private"}
+LAWS = {"halo": "HALO code stays in HALO-AGENCY/halo; never copy it off", "home": "private"}
 CARD_FIELDS = ("path", "district", "origin", "owner", "seat", "lifecycle", "idle_days", "score")
 
 ORDER = ("Card", "Door", "Now", "Memory", "Tasks", "Letters", "Rules")   # how the packet reads

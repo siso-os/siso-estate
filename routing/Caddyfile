@@ -1,0 +1,632 @@
+# The site's routing, defined once so every hostname serves it identically.
+(siso_login_required) {
+	# These blocks were commented "behind the app's login" while having no auth
+	# directive at all: a writable root terminal, and the Orca runtime, were
+	# both served to anyone on the internet. forward_auth asks Django whether
+	# the session cookie is real before the request reaches the backend.
+	#
+	# Two things this has to get right, both learned by breaking them.
+	#
+	# The auth subrequest must not inherit the client's WebSocket handshake.
+	# forward_auth replays the original headers, so Connection: Upgrade and
+	# Upgrade: websocket reached Django, which answered 401 rather than 200 and
+	# killed the socket for signed-in users as well as anonymous ones. Deleting
+	# them on the subrequest leaves a plain GET carrying the session cookie,
+	# which is the only question being asked.
+	#
+	# And Django's own X-Frame-Options: DENY must not ride back out on the
+	# gated response. Orca is embedded in the Agents surface on this same
+	# origin, and a propagated DENY makes the browser refuse to paint the
+	# iframe -- a blank panel with no error anywhere.
+	forward_auth 127.0.0.1:8000 {
+		uri /api/users/me/
+		copy_headers Cookie
+		header_up -Connection
+		header_up -Upgrade
+		header_up -Sec-WebSocket-Key
+		header_up -Sec-WebSocket-Version
+		header_up -Sec-WebSocket-Extensions
+		header_up -Sec-WebSocket-Protocol
+		@ok status 2xx
+		handle_response @ok {
+			request_header -X-Frame-Options
+		}
+	}
+	header -X-Frame-Options
+}
+
+(siso_app) {
+	# /twenty is the entry point for Sheets. Twenty's own client routes live at
+	# the root (/objects/..., /settings/...), so the prefix is only a doorway:
+	# redirect it to Twenty's root rather than proxying, or its router treats
+	# "/twenty/" as an unknown page and renders its 404.
+	# Sheets SSO: mints a short-lived Twenty login token and redirects into
+	# /verify, so the shell can open Sheets without a second sign-in.
+	# Token usage rollup. Each machine's TokenTracker pushes its 30-minute
+	# buckets here; the dashboard reads them back same-origin, which a browser
+	# cannot do against another machine's loopback.
+	# The usage rollup holds Shaan's spend and the fleet's machine names, and this
+	# path published it to anyone who knew the URL. Reads now require the Plane
+	# session the app already issues, checked here at the edge rather than in the
+	# client — production still runs a bundle that calls this path directly, so
+	# edge auth protects the old client and the new one at once, with no wait for
+	# a promotion.
+	#
+	# /push is exempt on purpose: the fleet's machines authenticate with
+	# X-Siso-Token, not a browser session, and the rollup already rejects a push
+	# that lacks it. Routing them through forward_auth would break ingestion.
+	handle /tokens-api/push {
+		reverse_proxy 127.0.0.1:3106
+	}
+	handle /tokens-api/* {
+		forward_auth 127.0.0.1:8000 {
+			uri /api/v1/tokens/authcheck/
+		}
+		reverse_proxy 127.0.0.1:3106
+	}
+	# Beszel — fleet health (LABS-13). The hub is on loopback:8095; this is its
+	# one way in, and the agents' too.
+	#
+	# The prefix IS stripped. APP_URL=.../health/ only tells the hub what BASE_PATH
+	# to bake into the page it serves, so the browser asks for /health/api/... --
+	# the Go server itself always runs at root and 404s anything prefixed, which
+	# PocketBase then answers with index.html. That looks like a working 200 and
+	# is not: it is the SPA's HTML, with a JSON content type nowhere in sight.
+	# Stripping is what makes /health/api/... reach the real API; the baked
+	# BASE_PATH is still what keeps it clear of Plane's /api/*.
+	#
+	# Agents dial IN to this path: HUB_URL/api/beszel/agent-connect is a
+	# WebSocket, which is why the Macs behind NAT need no inbound port. Caddy
+	# upgrades it without further configuration; do not add header rules that
+	# would strip Connection/Upgrade.
+	# The agents' way in, and it must stay open. Five machines dial this path
+	# outward over a WebSocket carrying a Beszel token and NO Plane cookie
+	# (agent/client.go builds HUB_URL + /api/beszel/agent-connect), so putting the
+	# login in front of it would 401 the whole fleet and the page would go dark.
+	# It is exempt by path, and by nothing wider than this one path.
+	handle /health/api/beszel/agent-connect* {
+		uri strip_prefix /health
+		reverse_proxy 127.0.0.1:8095
+	}
+	# Everything else about the hub is behind Plane's login.
+	#
+	# This is load-bearing, not defence in depth: the systems and system_stats
+	# collections are deliberately readable without a Beszel token, so that the
+	# native Health page can render over Plane's own session instead of asking
+	# Shaan to sign in to Beszel a second time. That trade is only safe while this
+	# gate exists. Remove it and the fleet's metrics are public to anyone who
+	# knows the URL -- the same hole /tokens-api had.
+	redir /health /health/ permanent
+	handle /health/* {
+		import siso_login_required
+		uri strip_prefix /health
+		reverse_proxy 127.0.0.1:8095
+	}
+	# The fleet's own WhatsApp, through the OpenWA gateway on loopback:2785.
+	#
+	# BEHIND THE LOGIN. This carries a live, linked personal number: the chat list
+	# and every message in it. Until now this origin had no auth of its own --
+	# 0af9e16 put the terminals and Orca behind siso_login_required but not this,
+	# so an unauthenticated GET from the internet returned 200 and his real
+	# conversations with it. The gate is the point of the block; sending is only
+	# safe because of it.
+	#
+	# Sending is allowed again for a signed-in person. The risk was never Shaan
+	# messaging from his own inbox, it was a stranger doing it, and that is what
+	# forward_auth answers. Reads and sends now pass through the same door.
+	#
+	# The API key is still injected here rather than shipped in a browser bundle,
+	# and the allowlist still holds: no logout, no delete, no bulk send, no group
+	# administration. Everything not matched below falls through to the SPA
+	# handler and never reaches the gateway.
+	@contact_api {
+		path_regexp contact ^/contact-api/api/sessions(/[0-9a-f-]+/(qr|chats|contacts|messages/.+/history|messages/send-text))?$
+	}
+	handle @contact_api {
+		import siso_login_required
+		uri strip_prefix /contact-api
+		reverse_proxy 127.0.0.1:2785 {
+			header_up X-API-Key "cf3a5150b35f941851fe1b9cc48f53684e44f7f34ec37e54af9b1dac4f0e6000"
+		}
+	}
+	handle /sheets-sso* {
+		reverse_proxy 127.0.0.1:3105
+	}
+	redir /twenty /objects/companies permanent
+	redir /twenty/ /objects/companies permanent
+	# Typing /objects/companies into the address bar lands on Twenty's welcome
+	# page, every time. Twenty's routes sit at the origin root, but the session
+	# handshake lives in the Sheets component, so a direct visit never runs it and
+	# Twenty correctly concludes it is signed out. Send those into the shell,
+	# which does run it.
+	#
+	# TWO exemptions, because getting this wrong nests the app inside itself: the
+	# frame's own load would be redirected to the shell, and the shell would
+	# render inside the iframe.
+	#
+	# Referer is the real discriminator. A typed URL or a bookmark sends none; a
+	# load from our own pages sends ours. It is also the one signal here that can
+	# actually be observed -- Sec-Fetch-Dest reads as empty through Playwright's
+	# request API, so a rule resting on it could not be tested before shipping.
+	# siso-frame=1 is the frame's explicit marker and stays as belt and braces:
+	# it covers the first load, Referer covers every reload after it.
+	@objects_direct {
+		path /objects /objects/*
+		not query siso-frame=1
+		not header Referer https://sisolabs.space*
+	}
+	redir @objects_direct /siso-crm/sheets 302
+	handle /objects* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /settings* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /chat* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /welcome* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /create* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /install-apps* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /verify* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	# Twenty (Sheets) requests its bundles from an absolute /assets/ path, which
+	# would otherwise fall through to Plane's SPA handler below and be answered
+	# with index.html. Both builds use content-hashed filenames, so a file that is
+	# not on Plane's disk belongs to Twenty. Serve Plane's own assets from disk
+	# and hand everything else to Twenty; nothing can collide.
+	# Twenty serves its own API and static files from absolute root paths. These
+	# do not overlap anything Plane owns (Plane's API lives under /api and /auth),
+	# so they can be handed to Twenty directly. /auth is deliberately NOT included:
+	# it is Plane's, and Twenty's OAuth flows would collide with it.
+	handle /client-config* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /graphql* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /metadata* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /rest* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /files* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	handle /images* {
+		reverse_proxy 127.0.0.1:3101
+	}
+	# The /dev preview's index.html asks for its chunks at an absolute /assets/
+	# path -- the app is built with basename "/" -- so they arrive here without the
+	# /dev prefix. Being absent from `current`, they matched the Twenty fallback
+	# below and were answered with Twenty's HTML, which blanked every preview: the
+	# same "JavaScript served as HTML" failure the comment below was written for.
+	# Serve them from the dev release first. Both builds are content-hashed, so a
+	# file present in dev and absent from current can only be dev's.
+	@dev_asset {
+		path /assets/*
+		not file {
+			root /opt/siso-web-releases/current
+		}
+		file {
+			root /opt/siso-web-releases/dev
+		}
+	}
+	handle @dev_asset {
+		header >Cache-Control "public, max-age=31536000, immutable"
+		root * /opt/siso-web-releases/dev
+		file_server
+	}
+	@twenty_asset {
+		path /assets/*
+		# Checked against the directory Caddy actually serves. It used to point at
+		# the build tree, so after a release swap our own chunks looked absent and
+		# were proxied to Twenty, which answers a .js request with HTML and blanks
+		# the app.
+		not file {
+			root /opt/siso-web-releases/current
+		}
+		# ...and not ours either. A chunk absent from BOTH releases is a stale
+		# index asking for a file no release contains -- it is not Twenty's, and
+		# proxying it returns Twenty's HTML with a 200, which fails MIME checking
+		# and blanks the page while every URL still looks healthy. Twenty's own
+		# bundles are the ones it actually serves, so ask it: anything matching
+		# our build's naming is ours and must 404 rather than be proxied.
+	}
+	handle @twenty_asset {
+		# Twenty's bundle is Vite content-hashed but it sends max-age=0, so the
+		# browser revalidates a ~3.9MB file on every load across the tunnel.
+		# The hash makes the URL change on deploy, so overriding is safe.
+		header >Cache-Control "public, max-age=31536000, immutable"
+		# ASK TWENTY WHAT IS ITS OWN, instead of guessing from filenames.
+		#
+		# A `not path_regexp ours (...)` list used to sit in the matcher above,
+		# naming our chunk prefixes. It cannot work, for two reasons found on
+		# 2026-09-11:
+		#   1. Our build and Twenty SHARE 12 chunk families -- layout, use, i18n,
+		#      icon, index.esm, navigation, date, dist, proxy, utils, workflow,
+		#      AnimatePresence. A list that claims `layout` steals Twenty's
+		#      layout-*.js; one that omits it abandons 53 chunks of ours.
+		#   2. A generated snippet declared its matcher with the same name `ours`,
+		#      so @twenty_asset silently evaluated THAT regex rather than its own,
+		#      and real Twenty assets 404d while "provably not matching".
+		#
+		# The bug was never which file Caddy picked. It is that Twenty answers an
+		# unknown /assets/*.js with its OWN index.html and a 200, so the browser
+		# gets HTML where it expects JavaScript and the app blanks while every URL
+		# still looks healthy -- which is what a stale tab hits after KEEP deploys.
+		# So proxy exactly as before, and turn that one lie into the 404 it should
+		# always have been. No filename guessing, so no collisions are possible.
+		reverse_proxy 127.0.0.1:3101 {
+			@html_answer header Content-Type text/html*
+			handle_response @html_answer {
+				error 404
+			}
+		}
+	}
+	handle /api/xp-store/* {
+		import siso_login_required
+		reverse_proxy 127.0.0.1:8894
+	}
+	# Life Improve + Goals (LABS-27) — read-only reader on 127.0.0.1:8895, serving his
+	# goals, improve backlog and time blocks. MUST stay BEFORE `handle /api/*` or
+	# Plane's backend on :8000 answers these paths instead.
+	handle /api/improve/* {
+		import siso_login_required
+		reverse_proxy 127.0.0.1:8895
+	}
+	handle /api/lifelock/goals* {
+		import siso_login_required
+		reverse_proxy 127.0.0.1:8895
+	}
+	handle /api/lifelock/time-blocks {
+		import siso_login_required
+		reverse_proxy 127.0.0.1:8895
+	}
+	handle /api/life-improve/* {
+		import siso_login_required
+		reverse_proxy 127.0.0.1:8895
+	}
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+	handle /auth/* {
+		reverse_proxy 127.0.0.1:8000
+	}
+	# MinIO object storage. Plane signs presigned URLs against this public host
+	# (USE_MINIO=1 -> endpoint is request host), path-style: /<bucket>/<key>.
+	# The bucket name "uploads" IS the path prefix, so pass the URI through
+	# unchanged (handle, not handle_path) and preserve Host so the S3
+	# signature still validates.
+	# Project front doors composed from the siso-shell U4 template.
+	# Static HTML listing private repos and internal counts, so it sits behind
+	# the same tunnel as Plane. Not public: no Cloudflare Pages deploy.
+	# Oracle Operator board — 31 Aug Vite build, base path /board (hardcoded in the bundle), served read-only so it can
+	# be looked at. TASK-0718 (build + wire + deploy) remains open: this is a
+	# static preview, not a wired deployment.
+	# A preview of the app, so an agent can publish work for review without
+	# touching the production URL. Same release mechanism, second symlink:
+	# siso-deploy.sh dev  publishes here, siso-deploy.sh  publishes to current.
+	# If /opt/siso-web-releases/dev does not exist yet this simply 404s.
+	# --- Buzz (LABS-15): the WhatsApp groups Shaan selected, in Buzz's own UI.
+	# Relay first: it must win over the file server below.
+	# LABS-41 reviewed static/deny arrangement, applied by Agent Zero 2026-09-12 08:4xZ.
+	# BOTH relay paths (dev and production) answer 403 behind the login gate: membership cannot be
+	# enabled until RELAY_OWNER_PUBKEY is enrolled, and until then his private WhatsApp must not be
+	# readable by any signed-in estate account -- including the shared agent-verifier our tooling uses.
+	# The static root is the enrollment assembly (access.json false), so the page is honest about
+	# being closed rather than rendering an empty channel list. Restoration steps are in
+	# ops/siso/buzz/caddy-route.proposed; prove a signed-in UNENROLLED read is denied before undoing.
+	@buzz_relay path /dev/buzz/relay /dev/buzz/relay/*
+	handle @buzz_relay {
+		import siso_login_required
+		respond "Buzz relay is closed pending owner enrollment." 403
+	}
+	@buzz_production_relay path /buzz/relay /buzz/relay/*
+	handle @buzz_production_relay {
+		import siso_login_required
+		respond "Buzz relay is closed pending owner enrollment." 403
+	}
+	redir /buzz /buzz/ 308
+	handle_path /buzz/* {
+		import siso_login_required
+		header Cache-Control "no-store"
+		root * /opt/siso-buzz/integration/web
+		try_files {path} /index.html
+		file_server
+	}
+	handle_path /dev/buzz/* {
+		import siso_login_required
+		header Cache-Control "no-store"
+		root * /opt/siso-buzz/integration/web
+		try_files {path} /index.html
+		file_server
+	}
+	handle /dev* {
+		uri strip_prefix /dev
+		root * /opt/siso-web-releases/dev
+		@dev_hashed path /assets/*
+		header @dev_hashed Cache-Control "public, max-age=31536000, immutable"
+		@dev_html path / /index.html
+		header @dev_html Cache-Control "no-cache, must-revalidate"
+		try_files {path} /index.html
+		file_server
+	}
+
+	# One preview per owner, at /preview/<name>/.
+	#
+	# A single shared /dev pointer meant four owners publishing over each other,
+	# and the last writer silently won -- work would be "deployed" and simply not
+	# there. A named preview is one more symlink in the same releases directory,
+	# and siso-deploy.sh <name> creates it.
+	#
+	# Unlike /dev this needs no asset rule of its own: a named preview is built
+	# with its own base, so it asks for its chunks under its own prefix and they
+	# cannot collide with production's. {path} keeps that prefix, and the
+	# index.html fallback is written out per-preview by the matcher below.
+	@preview path_regexp preview ^/preview/([a-z0-9][a-z0-9-]*)(/.*)?$
+	handle @preview {
+		# STRIP THE PREFIX. Without this, {path} in try_files below stays
+		# /preview/<name>/assets/x.js and Caddy looks for a `preview` directory
+		# that does not exist -- so the first arm NEVER matches, every asset
+		# falls through to the index.html fallback, and the page renders blank
+		# while every URL answers 200 text/html. Named previews had never once
+		# served an asset; the comment above claiming {path} keeps the prefix was
+		# the bug written down as the design. Found and proven by LABS-26 on an
+		# isolated Caddy, 2026-09-12.
+		uri strip_prefix /preview
+		root * /opt/siso-web-releases
+		@preview_hashed path_regexp /assets/
+		header @preview_hashed Cache-Control "public, max-age=31536000, immutable"
+		header Cache-Control "no-cache, must-revalidate"
+		try_files {path} /{re.preview.1}/index.html
+		file_server
+	}
+
+	@board path /board /board/*
+	handle @board {
+		route {
+			redir /board /board/ permanent
+		}
+		root * /opt/siso-hub
+		try_files {path} /board/index.html
+		file_server
+	}
+	# Working docs — plans, findings, verdicts. Same origin as the app, so they
+	# sit behind the VPS wall rather than on a localhost port only one machine
+	# can reach. Written by agents, read by Shaan.
+	# --- Tokens lens: TokenTracker's OWN dashboard, unmodified but for a one-line
+	# router basename (ops/tokentracker/patches/0001-router-basename.patch), built
+	# with --base=/tokens-app/. Shaan, twice: "i want their shit exactly". Their
+	# bundle calls /functions/tokentracker-* on window.location.origin; the rollup
+	# on :3106 answers those shapes at /tokens-api/functions/*, so rewrite+proxy.
+	# Hashed assets are public client code (same rule as /orca-app/assets/*); the
+	# page and the data are behind the login.
+	handle /functions/* {
+		import siso_login_required
+		rewrite * /tokens-api{uri}
+		reverse_proxy 127.0.0.1:3106
+	}
+	# LABS-40 dev-only candidate mount. Production /tokens-app/ below is UNCHANGED and stays pinned
+	# to dashboard/dist; this serves dashboard/dist-labs40 so a candidate build can be reviewed
+	# without switching the live lens under him. Assets skip the login gate exactly as the
+	# production handler does (hashed, immutable); the HTML is gated.
+	handle_path /tokens-app-dev/assets/* {
+		root * /opt/tokentracker-upstream/dashboard/dist-labs40/assets
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle_path /tokens-app-dev/* {
+		import siso_login_required
+		header Cache-Control "no-cache, must-revalidate"
+		root * /opt/tokentracker-upstream/dashboard/dist-labs40
+		try_files {path} /index.html
+		file_server
+	}
+	handle_path /tokens-app/assets/* {
+		root * /opt/tokentracker-upstream/dashboard/dist/assets
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle_path /tokens-app/* {
+		import siso_login_required
+		header Cache-Control "no-cache, must-revalidate"
+		root * /opt/tokentracker-upstream/dashboard/dist
+		try_files {path} /index.html
+		file_server
+	}
+
+	# Orca's own web client, served as the Agents surface inside the app.
+	# Orca ships a browser build (`pnpm build:web`) with no Electron in it, so
+	# this is static files plus a websocket to orcad on loopback -- the same
+	# shape as Sheets pointing at Twenty, not a second application.
+	# Hashed chunks get their own handler, ahead of the SPA fallback below. Without
+	# it a missing chunk falls through to web-index.html and is served as 200
+	# text/html -- a module script that fails MIME checking and reports an error
+	# naming the wrong problem entirely. The app's own /assets/* handler has
+	# guarded this for months; /orca-app/ did not. Order matters: this must precede
+	# the /orca-app/* block.
+	# NOT behind the login. These are content-hashed chunks of an open-source client,
+	# nothing private in them. Orca boots by fetching ~318 of them, and with the gate
+	# in place every one paid a Django round-trip: first paint measured at 15.9 s on
+	# 2026-09-12 (shell ready in 0.9 s). The index and /orca-rpc/ stay gated -- the
+	# door is the document and the socket, not the bundle.
+	handle_path /orca-app/assets/* {
+		root * /opt/orca-eval/orca/out/web/assets
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	handle_path /orca-app/* {
+		import siso_login_required
+		header Cache-Control "no-cache, must-revalidate"
+		root * /opt/orca-eval/orca/out/web
+		try_files {path} /web-index.html
+		file_server
+	}
+	# The runtime RPC. orcad binds 127.0.0.1 only; this is its one way in, and it
+	# sits behind the app's login exactly like the herdr terminal route.
+	# Match the bare path as well as anything under it: the pairing address is
+	# wss://sisolabs.space/orca-rpc with no trailing slash, and a /orca-rpc/*
+	# matcher alone never sees it -- the request falls through to the SPA, which
+	# answers 200 and fails the upgrade with "unexpected response code: 200".
+	@orca_rpc path /orca-rpc /orca-rpc/*
+	handle @orca_rpc {
+		import siso_login_required
+		uri strip_prefix /orca-rpc
+		reverse_proxy 127.0.0.1:7777
+	}
+	# The Labs team's agent space (sisodias/siso-internal-labs-agents): Shaan's verbatim
+	# intent, briefs, handoffs, ledgers, redacted sessions. Behind the login, never public.
+	# handle_path strips /agents so the repo is served at its root; .git is hidden.
+	@agents_root path /agents
+	handle @agents_root {
+		redir /agents /agents/ permanent
+	}
+	handle_path /agents/* {
+		import siso_login_required
+		@git path /.git /.git/*
+		respond @git 404
+		@md path *.md
+		header @md Content-Type "text/plain; charset=utf-8"
+		header Cache-Control "no-cache, must-revalidate"
+		root * /opt/siso-internal-labs-agents
+		file_server browse
+	}
+	@docs path /docs /docs/*
+	handle @docs {
+		# Behind the wall since 2026-09-12. This tree was world-readable with a
+		# browse listing while holding intent-audit.html — Shaan's own prompt
+		# history, verbatim, 54 asks. The neighbouring /agents/* handle was
+		# already gated; this one was simply never done. One line to reverse.
+		import siso_login_required
+		route {
+			redir /docs /docs/ permanent
+		}
+		root * /opt/siso-hub
+		file_server browse
+	}
+	@projects path /projects /projects/*
+	handle @projects {
+		# His ask, 2026-09-10: the project one-pagers live behind the VPS wall.
+		# They were served to anyone on the internet until 2026-09-12; the pages
+		# name private repos, internal counts and client work.
+		import siso_login_required
+		route {
+			redir /projects /projects/ permanent
+		}
+		root * /opt/siso-hub
+		file_server
+	}
+	@uploads_direct {
+		path /uploads /uploads/*
+		not header X-Forwarded-Host *
+	}
+	handle @uploads_direct {
+		reverse_proxy 127.0.0.1:9000 {
+			header_up Host {host}
+		}
+	}
+	@uploads path /uploads /uploads/*
+	handle @uploads {
+		reverse_proxy 127.0.0.1:9000 {
+			# The Cloudflare Worker rewrites Host to its own ephemeral
+			# *.trycloudflare.com name but preserves the real one in
+			# X-Forwarded-Host. Plane signs presigned URLs against the host the
+			# browser used, so restore that for MinIO or every signature fails.
+			# Derived at request time -- no hostname is hardcoded, so this keeps
+			# working when the tunnel name changes.
+			header_up Host {header.x-forwarded-host}
+			# The public URL is fronted by an HTTPS tunnel that terminates TLS
+			# before Caddy, so {scheme} here is http. MinIO rebuilds the signed
+			# URL from these headers; trust the original scheme the client used.
+			header_up X-Forwarded-Proto {header.x-forwarded-proto}
+		}
+	}
+	handle /live/* {
+		reverse_proxy 127.0.0.1:3100
+	}
+	# The Herdr surface's real terminal. ttyd owns a PTY and speaks its own
+	# WebSocket protocol to xterm.js in the app; reading a pane over HTTP was
+	# never a terminal. It binds to loopback only, so this is its one way in.
+	# One web terminal per machine. Each ttyd instance is attached to that
+	# machine's own herdr server, so /herdr-tty/mac-mini/ is the mini's herdr
+	# rather than a relabelled copy of this host's.
+	handle /herdr-tty/mac-mini/* {
+		import siso_login_required
+		uri strip_prefix /herdr-tty/mac-mini
+		reverse_proxy 127.0.0.1:7691
+	}
+	handle /herdr-tty/macbook/* {
+		import siso_login_required
+		uri strip_prefix /herdr-tty/macbook
+		reverse_proxy 127.0.0.1:7692
+	}
+	handle /herdr-tty/byk/* {
+		import siso_login_required
+		uri strip_prefix /herdr-tty/byk
+		reverse_proxy 127.0.0.1:7693
+	}
+	handle /herdr-tty/compute-pool/* {
+		import siso_login_required
+		uri strip_prefix /herdr-tty/compute-pool
+		reverse_proxy 127.0.0.1:7694
+	}
+	handle /herdr-tty/vps/* {
+		import siso_login_required
+		uri strip_prefix /herdr-tty/vps
+		reverse_proxy 127.0.0.1:7690
+	}
+	# The unprefixed path is this host, kept so an older client still works.
+	handle /herdr-tty/* {
+		import siso_login_required
+		uri strip_prefix /herdr-tty
+		reverse_proxy 127.0.0.1:7690
+	}
+	# Hashed assets get their own handler, so a missing chunk 404s instead of
+	# falling through to index.html. A module script answered with HTML fails
+	# MIME checking, and the resulting error names the wrong problem entirely.
+	# handle_path, not handle: this strips /assets/ and roots at the assets
+	# directory, so a filename that is not there 404s here instead of falling
+	# through to the SPA handler below and being answered with index.html.
+	#
+	# That fallthrough is why a stale index blanks the whole app silently. The
+	# browser asks for a chunk the current release does not contain, gets 200
+	# text/html, fails MIME checking on a module script, and every URL in the
+	# network tab still reads 200. It is the same hole the Orca surface had.
+	handle_path /assets/* {
+		root * /opt/siso-web-releases/current/assets
+		# Vite content-hashes every filename here, so a changed file is a changed
+		# URL and an unbounded TTL cannot serve stale code.
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+	# SPA: every other path is a client route, answered with index.html.
+	handle {
+		root * /opt/siso-web-releases/current
+		# index.html must never be cached, or a browser keeps asking for the
+		# previous release's chunks after a deploy and the app renders blank.
+		header Cache-Control "no-cache, must-revalidate"
+		try_files {path} /index.html
+		file_server
+	}
+	encode zstd gzip
+}
+
+# The domain. Caddy obtains and renews its certificate itself, so this
+# path needs neither the Worker nor the tunnel.
+sisolabs.space, www.sisolabs.space {
+	import siso_app
+}
+
+# The tunnel origin, kept alive while anything still points at it.
+:80 {
+	import siso_app
+}

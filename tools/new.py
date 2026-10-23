@@ -135,7 +135,7 @@ SERVES = {"apps": "every partner: a module built once", "clients": "a client tha
 
 def door(p):
     c, isl = p["card"], p["island"]
-    law = {"halo": "HALO's law: Cam's code stays in his repo; the HALO lead decides what is built here.",
+    law = {"halo": "HALO's law: HALO code stays in HALO's repo; the HALO lead decides what is built here.",
            "home": "Private: nothing leaves without Shaan."}.get(p.get("partner") or isl["id"], "SISO's law (docs/MODEL.md §12).")
     return (f"# {c['postcode']}\n\n**In one line:** {p['what'] or 'TODO: what this is, in one line'}. Island: {isl['name']} · "
             f"compound `{c['compound']}` · postcode `{c['postcode']}` · keeper {c['keeper']}.\n\n"

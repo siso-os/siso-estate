@@ -11,7 +11,7 @@
 Why not data-backup.py: its planes leave out .git, nested repos and node_modules, and these folders are mostly retired
 repos. Why verify from a fresh clone: on 6 Oct the plane producer was found to lose files silently on restore for some
 macOS inputs. Restore: `archive-offload.py restore FOLDER DEST` (needs ~/.config/siso/age/estate-backup.key).
-GitHub is the sync plane (Shaan, 24 Sep); HALO never leaves Cam's repo (ADR 0007). Receipts: machines/<m>/archive-offload.jsonl.
+GitHub is the sync plane (Shaan, 24 Sep); HALO code stays in HALO's repo (ADR 0007). Receipts: machines/<m>/archive-offload.jsonl.
 """
 import argparse, hashlib, io, itertools, json, os, re, shutil, socket, stat, subprocess, sys, tarfile, tempfile, time
 
@@ -53,6 +53,18 @@ def mirror(full, head):
     return f"{VAULT_HOST}:{dest}"
 
 
+def vault_ok():
+    """Bounded: the mini's vault must answer within 5 s (a wedged USB drive hangs ls) and accept a write within 10 s
+    (22 Oct: ls answered but mkdir hung for hours, so every mirror stalled); no answer means no mirror this run."""
+    check = ("/usr/bin/perl -e 'alarm 5; exec @ARGV' /bin/ls -d /Volumes/SISO-STORAGE-VAULT/SISO-VAULT && "
+             f"/usr/bin/perl -e 'alarm 10; exec @ARGV' /bin/mkdir {VAULT_DIR}/.probe.$$ && /bin/rmdir {VAULT_DIR}/.probe.$$")
+    cmd = ["/bin/sh", "-c", check] if MACHINE == "mini" else ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", VAULT_HOST, check]
+    try:
+        return subprocess.run(cmd, capture_output=True, timeout=15).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
 def sh(*a, cwd=None, check=True):
     r = subprocess.run(a, cwd=cwd, capture_output=True, text=True)
     if check and r.returncode:
@@ -62,6 +74,19 @@ def sh(*a, cwd=None, check=True):
 
 def repo_name(folder):
     return "siso-archive-" + re.sub(r"[^A-Za-z0-9._-]", "-", folder)[:80]
+
+
+def reclaim_scratch(folder):
+    """Clear this folder's scratch left by a killed run: its `finally` never ran (22 Oct: 12 GiB of parts stranded).
+    Scratch is ciphertext of a source still in place, so it is rebuilt; skipped while another run of the folder lives."""
+    mine = repo_name(folder) + "-"
+    pgrep = subprocess.Popen(["pgrep", "-f", f"archive-offload.py run .*{re.escape(folder)}"], stdout=subprocess.PIPE, text=True)
+    if any(p.isdigit() and int(p) != os.getpid() for p in pgrep.communicate()[0].split()):
+        return
+    for name in os.listdir(WORK) if os.path.isdir(WORK) else []:
+        if name.startswith(mine) and os.path.isdir(os.path.join(WORK, name)):
+            shutil.rmtree(os.path.join(WORK, name), ignore_errors=True)
+            print(f"reclaimed stale scratch {name}")
 
 
 def why_not(folder):
@@ -236,6 +261,16 @@ def source_manifest(folder, exclude=(), roots=None):
     return seen
 
 
+def remote_complete(full):
+    """An interrupted push leaves a repo with commits but missing parts: reuse it only when every listed part is there."""
+    listed = subprocess.run(["gh", "api", f"repos/{full}/contents/SHA256SUMS", "-H", "Accept: application/vnd.github.raw"], capture_output=True, text=True)
+    tree = subprocess.run(["gh", "api", f"repos/{full}/git/trees/main?recursive=1", "-q", ".tree[].path"], capture_output=True, text=True)
+    if listed.returncode or tree.returncode:
+        return False
+    want = [l.split("  ", 1)[1] for l in listed.stdout.splitlines() if "  " in l]
+    return bool(want) and all(p in set(tree.stdout.split()) for p in want)
+
+
 def run(folder, go, refreshed=False):
     why = why_not(folder)
     src = os.path.join(ARCHIVE, folder)
@@ -253,7 +288,9 @@ def run(folder, go, refreshed=False):
     if identity.returncode or identity.stdout.strip() != RECIPIENT:
         raise SystemExit("archive-offload: held; decrypt identity does not match recipient")
     existing = (subprocess.run(["gh", "repo", "view", full], capture_output=True).returncode == 0 and
-                subprocess.run(["gh", "api", f"repos/{full}/commits?per_page=1"], capture_output=True).returncode == 0)
+                subprocess.run(["gh", "api", f"repos/{full}/commits?per_page=1"], capture_output=True).returncode == 0 and
+                remote_complete(full))
+    reclaim_scratch(folder)
     # the temporary copy can be as big as the folder: keep 10 GiB free beyond it (8 Oct 18:49: free hit 6.7 GiB, laptop hung)
     if shutil.disk_usage(WS).free < kib * 1024 + 10 * 2**30:
         raise SystemExit(f"hold {folder}: needs {kib / 1048576 + 10:.1f} GiB free, have {shutil.disk_usage(WS).free / 2**30:.1f}")
@@ -300,7 +337,8 @@ def run(folder, go, refreshed=False):
         return run(folder, go, refreshed=True)
     if remote_head != head or bad:
         raise SystemExit(f"{folder}: NOT released: head {remote_head == head}, {len(bad)} entries differ, e.g. {bad[:3]}")
-    vault = None  # GitHub is the store (Shaan, 8 Oct: the mini mirror was "way too much extra"); `mirror-backfill` adds one
+    # GitHub is the verified copy; the vault mirror is a second copy only when the vault answers now
+    vault = mirror(full, head) if vault_ok() else "vault mirror skipped: vault unresponsive"
     nbytes = sum(n for _, _, n in parts)
     rec = {"at": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "folder": folder, "repo": full, "head": head,
            "parts": len(parts), "cipher_bytes": nbytes, "entries": len(seen),
